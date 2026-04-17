@@ -7,7 +7,15 @@ import { fileURLToPath } from "node:url";
 import type { LLMMessage } from "./agent/core/openai";
 import type { AgentLoopStreamEvent } from "./agent/core/loopRunner";
 import { createOpenAIEnclaveRuntime } from "./agent/core/openai";
-import { createFetchWebpageTool, createListFilesSafeTool, createReadFileSafeTool, createRunSafeBashTool, createWriteFileSafeTool } from "./agent/tools";
+import {
+  createFetchWebpageTool,
+  createListFilesSafeTool,
+  createReadFileSafeTool,
+  createRunSafeBashTool,
+  createSendMessageTool,
+  createSendFileTool,
+  createWriteFileSafeTool,
+} from "./agent/tools";
 
 const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
 const WORKSPACE_ROOT = resolve(CURRENT_DIR, "../..");
@@ -49,6 +57,8 @@ const toolFactories: Record<string, () => any> = {
   read_file_safe: createReadFileSafeTool,
   write_file_safe: createWriteFileSafeTool,
   list_files_safe: createListFilesSafeTool,
+  send_message: createSendMessageTool,
+  send_file: createSendFileTool,
 };
 
 function parseEnabledToolNames(): Set<string> {
@@ -63,7 +73,10 @@ function parseEnabledToolNames(): Set<string> {
     .split(",")
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
-  return new Set(names);
+  const enabled = new Set(names);
+  enabled.add("send_message");
+  enabled.add("send_file");
+  return enabled;
 }
 
 function buildEnabledTools(enabledToolNames: Set<string>) {
@@ -92,6 +105,8 @@ interface GrpcStreamReplyEvent {
   tool_name?: string;
   tool_call_id?: string;
   result_json?: string;
+  await_response?: boolean;
+  reply_to?: string;
   error?: string;
 }
 
@@ -204,6 +219,27 @@ function toGrpcEvent(event: AgentLoopStreamEvent): GrpcStreamReplyEvent {
       type: "message_update",
       role: "assistant",
       delta: event.delta,
+    };
+  }
+  if (event.type === "send_message") {
+    return {
+      type: "send_message",
+      delta: event.delta,
+      tool_call_id: event.toolCallId,
+      await_response: event.awaitResponse ?? false,
+      reply_to: event.replyTo,
+    };
+  }
+  if (event.type === "send_file") {
+    return {
+      type: "send_file",
+      tool_call_id: event.toolCallId,
+      await_response: event.awaitResponse ?? false,
+      reply_to: event.replyTo,
+      result_json: safeSerializeResult({
+        items: event.items,
+        caption: event.caption,
+      }),
     };
   }
   if (event.type === "tool_execution_start") {

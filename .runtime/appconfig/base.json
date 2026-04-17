@@ -1,55 +1,74 @@
 {
-    "runtime": {
-      "runtimeRoot": ".runtime",
-      "protoRoot": ".runtime/proto",
-      "memoryFilesRoot": ".runtime/memory_files",
-      "evolutionsRoot": ".runtime/evolutions"
+  "runtime": {
+    "runtimeRoot": ".runtime",
+    "protoRoot": ".runtime/proto",
+    "memoryFilesRoot": ".runtime/memory_files",
+    "evolutionsRoot": ".runtime/evolutions"
+  },
+  "enclaveRuntime": {
+    "grpc": {
+      "bindAddr": "${ENV:KAIROS_ENCLAVE_SOCKET:-unix:///run/kairos-runtime/sockets/kairos-runtime-enclave.sock}",
+      "protoPath": ".runtime/proto/enclave-runtime/enclave.proto"
     },
-    "enclaveRuntime": {
-      "grpc": {
-        "bindAddr": "${ENV:KAIROS_ENCLAVE_SOCKET:-unix:///run/kairos-runtime/sockets/kairos-runtime-enclave.sock}",
-        "protoPath": ".runtime/proto/enclave-runtime/enclave.proto"
+    "llm": {
+      "apiKey": "${ENV:API_KEY:-ollama}",
+      "baseURL": "${ENV:BASE_URL:-http://127.0.0.1:11434/v1}",
+      "model": "${ENV:MODEL:-qwen3.5:397b-cloud}"
+    },
+    "tools": {
+      "enabled": "all"
+    }
+  },
+  "stateDaemon": {
+    "grpc": {
+      "enclaveTarget": "${ENV:KAIROS_ENCLAVE_SOCKET:-unix:///run/kairos-runtime/sockets/kairos-runtime-enclave.sock}",
+      "vfsTarget": "${ENV:KAIROS_VFS_SOCKET:-unix:///run/kairos-runtime/sockets/kairos-runtime-vfs.sock}"
+    },
+    "telegram": {
+      "mode": "${ENV:TELEGRAM_MODE:-bot}",
+      "botToken": "${ENV:BOT_TOKEN}",
+      "userbot": {
+        "apiId": "${ENV:TELEGRAM_API_ID}",
+        "apiHash": "${ENV:TELEGRAM_API_HASH}",
+        "phoneNumber": "${ENV:TELEGRAM_PHONE}",
+        "password": "${ENV:TELEGRAM_PASSWORD:-}"
       },
+      "ownerUserId": "${ENV:OWNER_USER_ID}"
+    },
+    "triggers": {
+      "editedMessage": "${ENV:TRIGGER_EDITED_MESSAGE:-true}",
+      "privateChat": "${ENV:TRIGGER_PRIVATE_CHAT:-true}",
+      "probe": {
+        "enabled": "${ENV:TRIGGER_PROBE_GATE:-true}",
+        "cooldownMs": "${ENV:TRIGGER_PROBE_COOLDOWN_MS:-45000}"
+      }
+    },
+    "model": {
       "llm": {
-        "apiKey": "${ENV:ENCLAVE_API_KEY:-ollama}",
-        "baseURL": "${ENV:ENCLAVE_BASE_URL:-http://127.0.0.1:11434/v1}",
-        "model": "${ENV:ENCLAVE_MODEL:-qwen3.5:397b-cloud}"
+        "ollama": {
+          "baseUrl": "${ENV:OLLAMA_BASE_URL}",
+          "model": "qwen3.5:0.8b"
+        },
+        "cloud": {
+          "apiKey": "${ENV:STATE_DAEMON_CLOUD_API_KEY:-ollama}",
+          "baseURL": "${ENV:STATE_DAEMON_CLOUD_BASE_URL:-http://127.0.0.1:11434/v1}",
+          "model": "${ENV:STATE_DAEMON_CLOUD_MODEL:-qwen3.5:397b-cloud}"
+        }
       },
-      "tools": {
-        "enabled": "all"
+      "embedding": {
+        "provider": "ollama",
+        "ollamaBaseUrl": "${ENV:OLLAMA_BASE_URL}",
+        "ollamaModel": "qwen3-embedding:0.6b"
       }
     },
-    "stateDaemon": {
-      "grpc": {
-        "enclaveTarget": "${ENV:KAIROS_ENCLAVE_SOCKET:-unix:///run/kairos-runtime/sockets/kairos-runtime-enclave.sock}",
-        "vfsTarget": "${ENV:KAIROS_VFS_SOCKET:-unix:///run/kairos-runtime/sockets/kairos-runtime-vfs.sock}"
-      },
-      "telegram": {
-        "botToken": "${ENV:BOT_TOKEN}",
-        "ownerUserId": "${ENV:OWNER_USER_ID}"
-      },
-      "triggers": {
-        "editedMessage": "${ENV:TRIGGER_EDITED_MESSAGE:-true}",
-        "privateChat": "${ENV:TRIGGER_PRIVATE_CHAT:-true}"
-      },
-      "model": {
-        "llm": {
-          "ollama": {
-            "baseUrl": "${ENV:OLLAMA_BASE_URL}",
-            "model": "qwen3.5:0.8b"
-          },
-          "cloud": {
-            "apiKey": "${ENV:CLOUD_API_KEY:-ollama}",
-            "baseURL": "${ENV:CLOUD_BASE_URL:-http://127.0.0.1:11434/v1}",
-            "model": "${ENV:CLOUD_MODEL:-qwen3.5:397b-cloud}"
-          }
-        },
-        "embedding": {
-          "provider": "ollama",
-          "ollamaBaseUrl": "${ENV:OLLAMA_BASE_URL}",
-          "ollamaModel": "qwen3-embedding:0.6b"
-        }
-      }
+    "customEmojiToText": {
+      "enabled": "${ENV:CUSTOM_EMOJI_TO_TEXT_ENABLED:-false}",
+      "model": "${ENV:CUSTOM_EMOJI_TO_TEXT_MODEL:-}",
+      "baseURL": "${ENV:CUSTOM_EMOJI_TO_TEXT_BASE_URL:-}",
+      "apiKey": "${ENV:CUSTOM_EMOJI_TO_TEXT_API_KEY:-}",
+      "maxConcurrency": "${ENV:CUSTOM_EMOJI_TO_TEXT_MAX_CONCURRENCY:-3}",
+      "maxFrames": "${ENV:CUSTOM_EMOJI_TO_TEXT_MAX_FRAMES:-5}",
+      "dbPath": "${ENV:CUSTOM_EMOJI_TO_TEXT_DB_PATH:-data/memoh.db}"
     }
   }
-  
+}

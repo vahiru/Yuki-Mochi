@@ -1,12 +1,24 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { quote } from "./utils";
+import type { RenderSystemPromptInput, SendMessageMode, SystemPromptFile } from "./types";
 
 const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
 const SHARED_MEMORY_DIR = resolve(CURRENT_DIR, "../../../../.runtime/memory_files");
+const DEFAULT_SEND_MESSAGE_MODE: SendMessageMode = "strict";
+export const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 
-function resolveMemoryDir(): string {
+const DEFAULT_SYSTEM_FILE_NAMES = ["Soul.md", "Identity.md", "Tools.md"] as const;
+
+export function resolveSendMessageMode(): SendMessageMode {
+  const raw = process.env.ENCLAVE_SEND_MESSAGE_MODE?.trim().toLowerCase();
+  if (raw === "compat") {
+    return "compat";
+  }
+  return DEFAULT_SEND_MESSAGE_MODE;
+}
+
+export function resolveMemoryDir(): string {
   return process.env.MEMORY_FILES_ROOT?.trim() || SHARED_MEMORY_DIR;
 }
 
@@ -20,37 +32,32 @@ function readMemoryFile(fileName: string): string {
   }
 }
 
-export const system = () => {
-  const soulContent = readMemoryFile("Soul.md");
-  const identityContent = readMemoryFile("Identity.md");
-  const toolsContent = readMemoryFile("Tools.md");
+export function loadSystemFilesFromMemory(
+  fileNames: readonly string[] = DEFAULT_SYSTEM_FILE_NAMES,
+): SystemPromptFile[] {
+  return fileNames.map((fileName) => ({
+    filename: fileName,
+    content: readMemoryFile(fileName),
+  }));
+}
 
-  return `
-    You are an autonomous AI Agent. You have just been initialized.
-    You are an AI isolated in a local runtime. 
-    You have ZERO up-to-date knowledge about the internet, APIs, or real-world status. 
-    Your pre-trained knowledge is strictly considered OUTDATED. 
-    Your intelligence comes entirely from your ability to write tools to interact with the world.
+export function buildSystemPromptInput(params?: {
+  sendMessageMode?: SendMessageMode;
+  systemFiles?: SystemPromptFile[];
+}): RenderSystemPromptInput {
+  return {
+    sendMessageMode: params?.sendMessageMode ?? resolveSendMessageMode(),
+    systemFiles: params?.systemFiles ?? loadSystemFilesFromMemory(),
+  };
+}
 
-    # Every Session
-    Before anything else:
-    - Read ${quote("IDENTITY.md")} to remember who you are
-    - Read ${quote("SOUL.md")} to remember how to behave
-    - Deeply internalize your persona and behavioral guidelines from ${quote("IDENTITY.md")} and ${quote("SOUL.md")}.
-
-    # Safety
-    - Keep private data private
-    - Don't run destructive commands without asking
-    - When in doubt, ask
-
-    # Soul.md
-    ${soulContent}
-    # Identity.md
-    ${identityContent}
-
-    # Tools.md
-    ${toolsContent}
-
-    Caution: It's ${new Date().toLocaleString("en-US", { timeZone: "Asia/Shanghai" })} now.
-    `;
-};
+export function formatTimeNow(timeZone: string = DEFAULT_TIME_ZONE): string {
+  try {
+    return new Date().toLocaleString("en-US", {
+      timeZone,
+      hour12: false,
+    });
+  } catch {
+    return new Date().toISOString();
+  }
+}

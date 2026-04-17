@@ -28,6 +28,14 @@ interface EnclaveRuntimeConfig {
   };
 }
 
+interface UserBotConfig {
+  apiId: number;
+  apiHash: string;
+  phoneNumber: string;
+  password?: string;
+  sessionString?: string;
+}
+
 interface StateDaemonConfig {
   runtime: RuntimeConfig;
   grpc: {
@@ -35,12 +43,16 @@ interface StateDaemonConfig {
     vfsTarget: string;
   };
   telegram: {
-    botToken: string;
-    ownerUserId: string;
+    mode: "bot" | "userbot";
+    botToken?: string;
+    userbot?: UserBotConfig;
+    ownerUserId?: string;
   };
   triggers: {
     editedMessage: boolean;
     privateChat: boolean;
+    probeGate: boolean;
+    probeCooldownMs: number;
   };
   model: {
     llm: {
@@ -59,6 +71,15 @@ interface StateDaemonConfig {
       ollamaBaseUrl: string;
       ollamaModel: string;
     };
+  };
+  customEmojiToText: {
+    enabled: boolean;
+    model?: string;
+    baseURL?: string;
+    apiKey?: string;
+    maxConcurrency: number;
+    maxFrames: number;
+    dbPath: string;
   };
 }
 
@@ -182,6 +203,31 @@ function resolveBoolean(value: unknown, path: string, fallback: boolean): boolea
   return fallback;
 }
 
+function resolveInteger(
+  value: unknown,
+  path: string,
+  fallback: number,
+  min = 1
+): number {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(min, Math.floor(value));
+  }
+  if (typeof value === "string") {
+    const resolved = resolveEnvReference(value, path).trim();
+    if (!resolved) {
+      return fallback;
+    }
+    const parsed = Number.parseInt(resolved, 10);
+    if (Number.isFinite(parsed)) {
+      return Math.max(min, Math.floor(parsed));
+    }
+  }
+  return fallback;
+}
+
 function resolveEnvReference(raw: string, path: string): string {
   const trimmed = raw.trim();
   const matched = ENV_REF_PATTERN.exec(trimmed);
@@ -240,9 +286,10 @@ export function loadEnclaveRuntimeConfig(options: LoadOptions = {}): EnclaveRunt
   const apiKey =
     process.env.API_KEY ??
     process.env.QWEN_API_KEY ??
+    process.env.ENCLAVE_API_KEY ??
     requireString(llmConfig.apiKey, "enclaveRuntime.llm.apiKey");
-  const baseURL = process.env.BASE_URL ?? requireString(llmConfig.baseURL, "enclaveRuntime.llm.baseURL");
-  const model = process.env.MODEL ?? requireString(llmConfig.model, "enclaveRuntime.llm.model");
+  const baseURL = process.env.BASE_URL ?? process.env.ENCLAVE_BASE_URL ?? requireString(llmConfig.baseURL, "enclaveRuntime.llm.baseURL");
+  const model = process.env.MODEL ?? process.env.ENCLAVE_MODEL ?? requireString(llmConfig.model, "enclaveRuntime.llm.model");
   const enabledTools = process.env.ENABLED_TOOLS ?? requireString(toolsConfig.enabled, "enclaveRuntime.tools.enabled");
 
   if (process.env.MEMORY_FILES_ROOT) {
@@ -276,6 +323,7 @@ export function loadStateDaemonConfig(options: LoadOptions = {}): StateDaemonCon
   const grpcConfig = requireObject(stateConfig.grpc, "stateDaemon.grpc");
   const telegramConfig = requireObject(stateConfig.telegram, "stateDaemon.telegram");
   const triggersConfig = isObject(stateConfig.triggers) ? stateConfig.triggers : {};
+  const probeTriggerConfig = isObject(triggersConfig.probe) ? triggersConfig.probe : {};
   const modelConfig = requireObject(stateConfig.model, "stateDaemon.model");
   const llmConfig = requireObject(modelConfig.llm, "stateDaemon.model.llm");
   const llmOllamaConfig = requireObject(llmConfig.ollama, "stateDaemon.model.llm.ollama");
@@ -284,11 +332,68 @@ export function loadStateDaemonConfig(options: LoadOptions = {}): StateDaemonCon
 
   const enclaveTarget =
     process.env.AGENT_ENCLAVE_TARGET ??
+    process.env.KAIROS_ENCLAVE_SOCKET ??
     requireString(grpcConfig.enclaveTarget, "stateDaemon.grpc.enclaveTarget");
-  const vfsTarget = process.env.MEMORY_VFS_TARGET ?? requireString(grpcConfig.vfsTarget, "stateDaemon.grpc.vfsTarget");
-  const botToken = process.env.BOT_TOKEN ?? requireString(telegramConfig.botToken, "stateDaemon.telegram.botToken");
-  const ownerUserId =
-    process.env.OWNER_USER_ID ?? requireString(telegramConfig.ownerUserId, "stateDaemon.telegram.ownerUserId");
+  const vfsTarget = process.env.MEMORY_VFS_TARGET ?? process.env.KAIROS_VFS_SOCKET ?? requireString(grpcConfig.vfsTarget, "stateDaemon.grpc.vfsTarget");
+  
+  const mode = (process.env.TELEGRAM_MODE ??
+    requireString(telegramConfig.mode, "stateDaemon.telegram.mode")) as "bot" | "userbot";
+  
+  if (mode !== "bot" && mode !== "userbot") {
+    throw new Error(`Invalid telegram mode: ${mode}. Expected "bot" or "userbot".`);
+  }
+  
+  const ownerUserId = (() => {
+    if (typeof process.env.OWNER_USER_ID === "string" && process.env.OWNER_USER_ID.trim()) {
+      return process.env.OWNER_USER_ID;
+    }
+    if (typeof telegramConfig.ownerUserId !== "string") {
+      return undefined;
+    }
+    try {
+      const resolved = resolveEnvReference(
+        telegramConfig.ownerUserId,
+        "stateDaemon.telegram.ownerUserId"
+      ).trim();
+      return resolved || undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+  
+  let telegramResult: StateDaemonConfig["telegram"];
+  
+  if (mode === "userbot") {
+    const userbotConfig = isObject(telegramConfig.userbot) ? telegramConfig.userbot : {};
+    const apiId = parseInt(
+      process.env.TELEGRAM_API_ID ?? requireString(userbotConfig.apiId, "stateDaemon.telegram.userbot.apiId"),
+      10
+    );
+    const apiHash = process.env.TELEGRAM_API_HASH ?? requireString(userbotConfig.apiHash, "stateDaemon.telegram.userbot.apiHash");
+    const phoneNumber = process.env.TELEGRAM_PHONE ?? requireString(userbotConfig.phoneNumber, "stateDaemon.telegram.userbot.phoneNumber");
+    const password = process.env.TELEGRAM_PASSWORD ?? (userbotConfig.password as string | undefined);
+    const sessionString = process.env.TELEGRAM_SESSION_STRING ?? (telegramConfig.sessionString as string | undefined);
+    
+    telegramResult = {
+      mode,
+      userbot: {
+        apiId,
+        apiHash,
+        phoneNumber,
+        password,
+        sessionString,
+      },
+      ownerUserId,
+    };
+  } else {
+    const botToken = process.env.BOT_TOKEN ?? requireString(telegramConfig.botToken, "stateDaemon.telegram.botToken");
+    telegramResult = {
+      mode,
+      botToken,
+      ownerUserId,
+    };
+  }
+
   const llmOllamaBaseUrl =
     process.env.OLLAMA_BASE_URL ??
     requireString(llmOllamaConfig.baseUrl, "stateDaemon.model.llm.ollama.baseUrl");
@@ -297,14 +402,17 @@ export function loadStateDaemonConfig(options: LoadOptions = {}): StateDaemonCon
     requireString(llmOllamaConfig.model, "stateDaemon.model.llm.ollama.model");
   const llmCloudApiKey =
     process.env.STATE_DAEMON_CLOUD_API_KEY ??
+    process.env.CLOUD_API_KEY ??
     process.env.ARK_API_KEY ??
     process.env.API_KEY ??
     requireString(llmCloudConfig.apiKey, "stateDaemon.model.llm.cloud.apiKey");
   const llmCloudBaseURL =
     process.env.STATE_DAEMON_CLOUD_BASE_URL ??
+    process.env.CLOUD_BASE_URL ??
     requireString(llmCloudConfig.baseURL, "stateDaemon.model.llm.cloud.baseURL");
   const llmCloudModel =
     process.env.STATE_DAEMON_CLOUD_MODEL ??
+    process.env.CLOUD_MODEL ??
     requireString(llmCloudConfig.model, "stateDaemon.model.llm.cloud.model");
   const embeddingProvider = (
     process.env.EMBED_PROVIDER ??
@@ -322,6 +430,53 @@ export function loadStateDaemonConfig(options: LoadOptions = {}): StateDaemonCon
     process.env.OLLAMA_EMBED_MODEL ??
     requireString(embeddingConfig.ollamaModel, "stateDaemon.model.embedding.ollamaModel");
 
+  const customEmojiConfig = isObject((stateConfig as { customEmojiToText?: unknown }).customEmojiToText)
+    ? ((stateConfig as { customEmojiToText: Record<string, JsonValue> }).customEmojiToText)
+    : {};
+  const customEmojiEnabled = resolveBoolean(
+    process.env.CUSTOM_EMOJI_TO_TEXT_ENABLED ?? customEmojiConfig.enabled,
+    "stateDaemon.customEmojiToText.enabled",
+    false
+  );
+  const visionModelRaw = process.env.VISION_MODEL;
+  const visionBaseURLRaw = process.env.VISION_BASE_URL;
+  const visionApiKeyRaw = process.env.VISION_API_KEY;
+  const customEmojiModelRaw =
+    visionModelRaw ??
+    process.env.CUSTOM_EMOJI_TO_TEXT_MODEL ??
+    (typeof customEmojiConfig.model === "string"
+      ? resolveEnvReference(customEmojiConfig.model, "stateDaemon.customEmojiToText.model")
+      : undefined);
+  const customEmojiBaseURLRaw =
+    visionBaseURLRaw ??
+    process.env.CUSTOM_EMOJI_TO_TEXT_BASE_URL ??
+    (typeof customEmojiConfig.baseURL === "string"
+      ? resolveEnvReference(customEmojiConfig.baseURL, "stateDaemon.customEmojiToText.baseURL")
+      : undefined);
+  const customEmojiApiKeyRaw =
+    visionApiKeyRaw ??
+    process.env.CUSTOM_EMOJI_TO_TEXT_API_KEY ??
+    (typeof customEmojiConfig.apiKey === "string"
+      ? resolveEnvReference(customEmojiConfig.apiKey, "stateDaemon.customEmojiToText.apiKey")
+      : undefined);
+  const customEmojiMaxConcurrency = resolveInteger(
+    process.env.CUSTOM_EMOJI_TO_TEXT_MAX_CONCURRENCY ?? customEmojiConfig.maxConcurrency,
+    "stateDaemon.customEmojiToText.maxConcurrency",
+    3,
+    1
+  );
+  const customEmojiMaxFrames = resolveInteger(
+    process.env.CUSTOM_EMOJI_TO_TEXT_MAX_FRAMES ?? customEmojiConfig.maxFrames,
+    "stateDaemon.customEmojiToText.maxFrames",
+    5,
+    1
+  );
+  const customEmojiDbPathRaw =
+    process.env.CUSTOM_EMOJI_TO_TEXT_DB_PATH ??
+    (typeof customEmojiConfig.dbPath === "string"
+      ? resolveEnvReference(customEmojiConfig.dbPath, "stateDaemon.customEmojiToText.dbPath")
+      : "data/memoh.db");
+
   if (process.env.MEMORY_FILES_ROOT) {
     runtime.memoryFilesRoot = normalizePath(process.env.MEMORY_FILES_ROOT, REPO_ROOT);
   }
@@ -332,13 +487,21 @@ export function loadStateDaemonConfig(options: LoadOptions = {}): StateDaemonCon
       enclaveTarget,
       vfsTarget,
     },
-    telegram: {
-      botToken,
-      ownerUserId,
-    },
+    telegram: telegramResult,
     triggers: {
       editedMessage: resolveBoolean(triggersConfig.editedMessage, "stateDaemon.triggers.editedMessage", true),
       privateChat: resolveBoolean(triggersConfig.privateChat, "stateDaemon.triggers.privateChat", true),
+      probeGate: resolveBoolean(
+        process.env.TRIGGER_PROBE_GATE ?? probeTriggerConfig.enabled ?? triggersConfig.probeGate,
+        "stateDaemon.triggers.probeGate",
+        true,
+      ),
+      probeCooldownMs: resolveInteger(
+        process.env.TRIGGER_PROBE_COOLDOWN_MS ?? probeTriggerConfig.cooldownMs ?? triggersConfig.probeCooldownMs,
+        "stateDaemon.triggers.probeCooldownMs",
+        45000,
+        0,
+      ),
     },
     model: {
       llm: {
@@ -357,6 +520,15 @@ export function loadStateDaemonConfig(options: LoadOptions = {}): StateDaemonCon
         ollamaBaseUrl: embeddingOllamaBaseUrl,
         ollamaModel: embeddingOllamaModel,
       },
+    },
+    customEmojiToText: {
+      enabled: customEmojiEnabled,
+      model: customEmojiModelRaw || llmCloudModel,
+      baseURL: customEmojiBaseURLRaw || llmCloudBaseURL,
+      apiKey: customEmojiApiKeyRaw || llmCloudApiKey,
+      maxConcurrency: customEmojiMaxConcurrency,
+      maxFrames: customEmojiMaxFrames,
+      dbPath: normalizePath(customEmojiDbPathRaw, REPO_ROOT),
     },
   };
 }

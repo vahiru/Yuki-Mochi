@@ -71,3 +71,13 @@ src/vfs/target
 .artifacts/
 
 src/sandbox/target
+login.js
+
+EXAMPLE/
+# lockfiles
+bun.lock
+
+# local agent/workflow docs and scripts
+AGENTS.md
+CLAUDE.md
+scripts/build-vfs-native.sh

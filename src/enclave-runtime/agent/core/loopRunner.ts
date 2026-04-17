@@ -38,6 +38,26 @@ export type AgentLoopStreamEvent =
       delta: string;
     }
   | {
+      type: "send_message";
+      delta: string;
+      toolCallId?: string;
+      awaitResponse?: boolean;
+      replyTo?: string;
+    }
+  | {
+      type: "send_file";
+      items: Array<{
+        source: string;
+        type: "image" | "audio" | "file";
+        mimeType?: string;
+        fileName?: string;
+      }>;
+      caption?: string;
+      toolCallId?: string;
+      awaitResponse?: boolean;
+      replyTo?: string;
+    }
+  | {
       type: "tool_execution_start";
       toolName: string;
       toolCallId?: string;
@@ -66,6 +86,12 @@ export interface CreateAgentLoopRunnerOptions {
 }
 
 const DEFAULT_PROVIDER = "openai";
+const DEFAULT_SEND_MESSAGE_MODE = "strict";
+const DEFAULT_STRICT_TEXT_FALLBACK = true;
+const VISION_DEBUG_ENABLED = /^(1|true|yes)$/i.test(
+  (process.env.VISION_DEBUG ?? "").trim()
+);
+type SendMessageMode = "strict" | "compat";
 
 function createCompatibleModel(modelId: string, baseURL: string): Model<"openai-completions"> {
   return {
@@ -138,6 +164,28 @@ interface ApoptosisToolResult {
   };
 }
 
+interface SendMessageToolResult {
+  details?: {
+    text?: string;
+    awaitResponse?: boolean;
+    replyTo?: string;
+  };
+}
+
+interface SendFileToolResult {
+  details?: {
+    items?: Array<{
+      source?: string;
+      type?: string;
+      mimeType?: string;
+      fileName?: string;
+    }>;
+    caption?: string;
+    awaitResponse?: boolean;
+    replyTo?: string;
+  };
+}
+
 interface AgentEndMessage {
   role?: string;
   content?: Array<{ type?: string; text?: string }>;
@@ -154,15 +202,134 @@ function extractApoptosisTargetToolName(result: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function resolveSendMessageMode(): SendMessageMode {
+  const raw = process.env.ENCLAVE_SEND_MESSAGE_MODE?.trim().toLowerCase();
+  if (raw === "compat") {
+    return "compat";
+  }
+  return DEFAULT_SEND_MESSAGE_MODE;
+}
+
+function resolveStrictTextFallbackEnabled(): boolean {
+  const raw = process.env.ENCLAVE_STRICT_TEXT_FALLBACK?.trim().toLowerCase();
+  if (!raw) {
+    return DEFAULT_STRICT_TEXT_FALLBACK;
+  }
+  if (raw === "0" || raw === "false" || raw === "no" || raw === "off") {
+    return false;
+  }
+  return true;
+}
+
+function extractSendMessagePayload(result: unknown): {
+  text: string;
+  awaitResponse: boolean;
+  replyTo?: string;
+} | null {
+  const details = (result as SendMessageToolResult | undefined)?.details;
+  const text = typeof details?.text === "string" ? details.text.trim() : "";
+  if (!text) {
+    return null;
+  }
+  const replyTo = typeof details?.replyTo === "string" && details.replyTo.trim()
+    ? details.replyTo.trim()
+    : undefined;
+  return {
+    text,
+    awaitResponse: details?.awaitResponse === true,
+    replyTo,
+  };
+}
+
+function extractSendFilePayload(result: unknown): {
+  items: Array<{
+    source: string;
+    type: "image" | "audio" | "file";
+    mimeType?: string;
+    fileName?: string;
+  }>;
+  caption?: string;
+  awaitResponse: boolean;
+  replyTo?: string;
+} | null {
+  const details = (result as SendFileToolResult | undefined)?.details;
+  if (!Array.isArray(details?.items) || details.items.length === 0) {
+    return null;
+  }
+
+  const items: Array<{
+    source: string;
+    type: "image" | "audio" | "file";
+    mimeType?: string;
+    fileName?: string;
+  }> = [];
+
+  for (const item of details.items) {
+    const source = typeof item?.source === "string" ? item.source.trim() : "";
+    const type = item?.type;
+    if (!source) {
+      continue;
+    }
+    if (type !== "image" && type !== "audio" && type !== "file") {
+      continue;
+    }
+    items.push({
+      source,
+      type,
+      mimeType: typeof item?.mimeType === "string" && item.mimeType.trim()
+        ? item.mimeType.trim()
+        : undefined,
+      fileName: typeof item?.fileName === "string" && item.fileName.trim()
+        ? item.fileName.trim()
+        : undefined,
+    });
+  }
+
+  if (items.length === 0) {
+    return null;
+  }
+
+  const caption = typeof details.caption === "string" && details.caption.trim()
+    ? details.caption.trim()
+    : undefined;
+  const replyTo = typeof details.replyTo === "string" && details.replyTo.trim()
+    ? details.replyTo.trim()
+    : undefined;
+
+  return {
+    items,
+    caption,
+    awaitResponse: details.awaitResponse === true,
+    replyTo,
+  };
+}
+
+import fs from "node:fs/promises";
+
 async function downloadImageAsBase64(url: string): Promise<string | null> {
   try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
+    let buf: Buffer;
+    let contentType: string;
+
+    if (url.startsWith("file://")) {
+      const filePath = url.slice(7);
+      buf = await fs.readFile(filePath);
+      contentType = detectImageMime(buf, null, url);
+    } else if (/^https?:\/\//i.test(url)) {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      buf = Buffer.from(await res.arrayBuffer());
+      contentType = detectImageMime(buf, res.headers.get("content-type"), url);
+    } else {
+      // Userbot may pass plain local paths (for example /tmp/kairos-vision/xxx.jpg).
+      buf = await fs.readFile(url);
+      contentType = detectImageMime(buf, null, url);
+    }
+
     const base64 = buf.toString("base64");
-    const contentType = detectImageMime(buf, res.headers.get("content-type"), url);
     return `data:${contentType};base64,${base64}`;
-  } catch {
+  } catch (err) {
+    console.warn("[vision] downloadImageAsBase64 failed for", url, err);
     return null;
   }
 }
@@ -184,17 +351,104 @@ function detectImageMime(buf: Buffer, headerType: string | null, url: string): s
   return "image/jpeg";
 }
 
-function injectVisionDescription(messages: AgentLoopMessage[], description: string): AgentLoopMessage[] {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") {
-      return messages.map((m, idx) =>
-        idx === i
-          ? { ...m, content: m.content.replace(/\[photo(?:\s*x\d+)?\]/g, `[图片内容: ${description}]`) }
-          : m
-      );
-    }
+
+interface VisionEndpointConfig {
+  apiKey: string;
+  baseURL: string;
+  modelId: string;
+}
+
+function readEnvOverride(name: string): string | undefined {
+  const raw = process.env[name];
+  if (typeof raw !== "string") {
+    return undefined;
   }
-  return messages;
+  const normalized = raw.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function resolveVisionEndpointConfig(options: {
+  apiKey: string;
+  baseURL: string;
+  modelId: string;
+}): VisionEndpointConfig {
+  const apiKey =
+    readEnvOverride("VISION_API_KEY") ??
+    readEnvOverride("CUSTOM_EMOJI_TO_TEXT_API_KEY") ??
+    options.apiKey;
+  const baseURL =
+    readEnvOverride("VISION_BASE_URL") ??
+    readEnvOverride("CUSTOM_EMOJI_TO_TEXT_BASE_URL") ??
+    options.baseURL;
+  const modelId =
+    readEnvOverride("VISION_MODEL") ??
+    readEnvOverride("CUSTOM_EMOJI_TO_TEXT_MODEL") ??
+    options.modelId;
+
+  return { apiKey, baseURL, modelId };
+}
+
+function extractVisionMessageText(content: unknown): string {
+  if (typeof content === "string") {
+    return content.trim();
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  const text = content
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return "";
+      }
+      const maybeText = (item as { text?: unknown }).text;
+      return typeof maybeText === "string" ? maybeText : "";
+    })
+    .filter((item) => item.length > 0)
+    .join("\n")
+    .trim();
+  return text;
+}
+
+function injectVisionDescription(messages: AgentLoopMessage[], description: string): AgentLoopMessage[] {
+  let replacedAny = false;
+  const replacedMessages = messages.map((message) => {
+    if (message.role !== "user") {
+      return message;
+    }
+    const content = message.content.replace(
+      /\[photo(?:\s*x\d+)?\]/g,
+      `[图片内容: ${description}]`
+    );
+    if (content !== message.content) {
+      replacedAny = true;
+      return { ...message, content };
+    }
+    return message;
+  });
+
+  if (replacedAny) {
+    return replacedMessages;
+  }
+
+  for (let i = replacedMessages.length - 1; i >= 0; i--) {
+    if (replacedMessages[i].role !== "user") {
+      continue;
+    }
+    const suffix = `\n\n[图片内容: ${description}]`;
+    replacedMessages[i] = {
+      ...replacedMessages[i],
+      content: `${replacedMessages[i].content}${suffix}`,
+    };
+    if (VISION_DEBUG_ENABLED) {
+      console.warn("[vision] no [photo] placeholder found, appended image description to last user message");
+    }
+    return replacedMessages;
+  }
+
+  return [
+    ...replacedMessages,
+    { role: "user", content: `[图片内容: ${description}]` },
+  ];
 }
 
 async function preprocessVisionContent(
@@ -221,9 +475,22 @@ async function preprocessVisionContent(
           ...valid.map((u) => ({ type: "image_url", image_url: { url: u } })),
         ],
       }],
-      max_tokens: 800,
+      max_tokens: 240,
     });
-    return json?.choices?.[0]?.message?.content ?? null;
+    const text = extractVisionMessageText(json?.choices?.[0]?.message?.content);
+    if (!text) {
+      if (VISION_DEBUG_ENABLED) {
+        console.warn(
+          "[vision] empty content from vision model response",
+          JSON.stringify({
+            hasChoices: Array.isArray(json?.choices),
+            model: modelId,
+          }),
+        );
+      }
+      return null;
+    }
+    return text;
   } catch (err) {
     console.warn("[vision] preprocessing failed:", err);
     return null;
@@ -247,11 +514,27 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
     const { imageUrls, ...genOpts } = generateOptions;
     const model = createCompatibleModel(genOpts.model ?? options.defaultModel, options.baseURL);
     if (imageUrls?.length) {
+      if (VISION_DEBUG_ENABLED) {
+        console.log(`[vision] preprocessing start count=${imageUrls.length}`);
+      }
+      const vision = resolveVisionEndpointConfig({
+        apiKey: options.apiKey,
+        baseURL: options.baseURL,
+        modelId: model.id,
+      });
       const description = await preprocessVisionContent(
-        imageUrls, options.apiKey, options.baseURL, model.id,
+        imageUrls,
+        vision.apiKey,
+        vision.baseURL,
+        vision.modelId,
       );
       if (description) {
+        if (VISION_DEBUG_ENABLED) {
+          console.log(`[vision] description injected length=${description.length}`);
+        }
         messages = injectVisionDescription(messages, description);
+      } else if (VISION_DEBUG_ENABLED) {
+        console.warn("[vision] description is empty after preprocessing");
       }
     }
 
@@ -268,6 +551,9 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
     let currentMessageHasToolCall = false;
     let currentMessageTextBuffer = "";
     let globalMessageHasEmitted = false;
+    let messageSentViaTool = false;
+    const sendMessageMode = resolveSendMessageMode();
+    const strictTextFallbackEnabled = resolveStrictTextFallbackEnabled();
     try {
       console.log("[loopRunner] calling agentLoop with messages:", messages.length);
       const stream = agentLoop(
@@ -331,7 +617,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
             currentMessageTextBuffer = "";
             continue;
           }
-          if (!currentMessageHasToolCall) {
+          if (!currentMessageHasToolCall && sendMessageMode === "compat" && !messageSentViaTool) {
             let output = currentMessageTextBuffer;
             if (!output && Array.isArray(message.content)) {
               output = message.content
@@ -342,6 +628,28 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
             console.log("[loopRunner] message_end output:", output);
             if (output) {
               globalMessageHasEmitted = true;
+              yield {
+                type: "message_update",
+                role: "assistant",
+                delta: output,
+              };
+            }
+          } else if (
+            !currentMessageHasToolCall &&
+            sendMessageMode === "strict" &&
+            strictTextFallbackEnabled &&
+            !messageSentViaTool
+          ) {
+            let output = currentMessageTextBuffer;
+            if (!output && Array.isArray(message.content)) {
+              output = message.content
+                .filter((block) => block.type === "text" && typeof block.text === "string")
+                .map((block) => block.text as string)
+                .join("");
+            }
+            if (output) {
+              globalMessageHasEmitted = true;
+              console.warn("[loopRunner] strict fallback: emitting plain text because send_message was not called");
               yield {
                 type: "message_update",
                 role: "assistant",
@@ -372,6 +680,33 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
               await options.unregisterTool(targetToolName);
               toolsChanged = true;
             }
+          } else if (event.toolName === "send_message") {
+            const payload = extractSendMessagePayload(event.result);
+            if (payload) {
+              messageSentViaTool = true;
+              globalMessageHasEmitted = true;
+              yield {
+                type: "send_message",
+                delta: payload.text,
+                toolCallId: event.toolCallId,
+                awaitResponse: payload.awaitResponse,
+                replyTo: payload.replyTo,
+              };
+            }
+          } else if (event.toolName === "send_file") {
+            const payload = extractSendFilePayload(event.result);
+            if (payload) {
+              messageSentViaTool = true;
+              globalMessageHasEmitted = true;
+              yield {
+                type: "send_file",
+                items: payload.items,
+                caption: payload.caption,
+                toolCallId: event.toolCallId,
+                awaitResponse: payload.awaitResponse,
+                replyTo: payload.replyTo,
+              };
+            }
           }
           if (toolsChanged) {
             syncToolsInPlace(loopContext, options.getCurrentTools());
@@ -397,13 +732,19 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
         }
       }
 
-      if (!globalMessageHasEmitted) {
+      if (!globalMessageHasEmitted && !messageSentViaTool) {
         const newMessages = await stream.result();
         const fallbackText = extractAssistantTextFromMessages(newMessages);
         console.log(
           `[loopRunner] fallback extraction: found=${Boolean(fallbackText)} length=${fallbackText.length}`
         );
-        if (fallbackText) {
+        const canEmitFallbackText =
+          sendMessageMode === "compat" ||
+          (sendMessageMode === "strict" && strictTextFallbackEnabled);
+        if (fallbackText && canEmitFallbackText) {
+          if (sendMessageMode === "strict") {
+            console.warn("[loopRunner] strict fallback extraction: emitting plain text because send_message was not called");
+          }
           yield {
             type: "message_update",
             role: "assistant",
@@ -447,4 +788,3 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
     applyToolsToActiveLoops,
   };
 }
-
