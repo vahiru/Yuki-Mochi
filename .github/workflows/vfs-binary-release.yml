@@ -76,10 +76,7 @@ jobs:
             echo "[build] native cargo build for target=${{ matrix.target }}"
             REAL_PROTOC="$(command -v protoc)"
             PROTOC_WRAPPER="${RUNNER_TEMP}/protoc-wrapper"
-            cat >"${PROTOC_WRAPPER}" <<EOF
-#!/usr/bin/env bash
-exec "${REAL_PROTOC}" --experimental_allow_proto3_optional "\$@"
-EOF
+            printf '%s\n' '#!/usr/bin/env bash' "exec \"${REAL_PROTOC}\" --experimental_allow_proto3_optional \"\$@\"" > "${PROTOC_WRAPPER}"
             chmod +x "${PROTOC_WRAPPER}"
             export PROTOC="${PROTOC_WRAPPER}"
             for include_dir in /usr/include /usr/local/include; do
