@@ -47,6 +47,7 @@ package-lock.json
 # !src/.runtime/memory_files/Soul.md
 .runtime/memory_files/*
 !.runtime/memory_files/Soul.md
+.runtime/bin/*
 
 # dev docs
 .dev.docs

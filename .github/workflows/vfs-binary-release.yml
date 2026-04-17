@@ -1,0 +1,316 @@
+name: VFS Binary Release
+
+on:
+  push:
+    tags:
+      - "vfs-v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag, e.g. vfs-v1.2.3"
+        required: true
+      vfs_version:
+        description: "Override version in manifest (defaults to release_tag without vfs-v)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: amd64
+            libc: musl
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+            libc: gnu
+          - target: aarch64-unknown-linux-musl
+            arch: arm64
+            libc: musl
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+            libc: gnu
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build logos-kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          cross build \
+            --manifest-path src/vfs/Cargo.toml \
+            -p logos-kernel \
+            --release \
+            --target "${{ matrix.target }}"
+
+      - name: Package binary + checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          out_dir="dist/memory-vfs-linux-${{ matrix.arch }}-${{ matrix.libc }}"
+          mkdir -p "$out_dir"
+
+          source_bin=""
+          for candidate in logos-kernel memory-vfs logos-vfs; do
+            candidate_path="src/vfs/target/${{ matrix.target }}/release/${candidate}"
+            if [[ -x "$candidate_path" ]]; then
+              source_bin="$candidate_path"
+              break
+            fi
+          done
+
+          if [[ -z "$source_bin" ]]; then
+            echo "No executable found for target ${{ matrix.target }}" >&2
+            exit 1
+          fi
+
+          asset_name="memory-vfs-linux-${{ matrix.arch }}-${{ matrix.libc }}"
+          install -m 0755 "$source_bin" "${out_dir}/${asset_name}"
+          (cd "$out_dir" && sha256sum "$asset_name" > "${asset_name}.sha256")
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-vfs-linux-${{ matrix.arch }}-${{ matrix.libc }}
+          path: dist/memory-vfs-linux-${{ matrix.arch }}-${{ matrix.libc }}
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            libc: gnu
+            platform: linux/amd64
+            image: debian:bookworm-slim
+          - arch: amd64
+            libc: musl
+            platform: linux/amd64
+            image: alpine:3.20
+          - arch: arm64
+            libc: gnu
+            platform: linux/arm64
+            image: debian:bookworm-slim
+          - arch: arm64
+            libc: musl
+            platform: linux/arm64
+            image: alpine:3.20
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Smoke probe inside distro container
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_name="memory-vfs-linux-${{ matrix.arch }}-${{ matrix.libc }}"
+          host_bin="${PWD}/dist/${asset_name}/${asset_name}"
+
+          if [[ ! -f "$host_bin" ]]; then
+            echo "missing artifact: $host_bin" >&2
+            exit 1
+          fi
+          chmod +x "$host_bin"
+
+          docker run --rm \
+            --platform "${{ matrix.platform }}" \
+            -v "${PWD}/dist:/dist" \
+            "${{ matrix.image }}" \
+            sh -c '
+              set -eu
+              asset_name="memory-vfs-linux-${{ matrix.arch }}-${{ matrix.libc }}"
+              bin="/dist/${asset_name}/${asset_name}"
+              root="$(mktemp -d /tmp/kairos-vfs-smoke.XXXXXX)"
+              sock="${root}/probe.sock"
+
+              mkdir -p "${root}/entities" "${root}/memory" "${root}/sandbox" "${root}/proc-store" "${root}/svc-store"
+
+              SANDBOX_MODE=host \
+              VFS_USERS_ROOT="${root}/entities" \
+              VFS_MEMORY_ROOT="${root}/memory" \
+              VFS_SYSTEM_DB="${root}/system.db" \
+              VFS_SANDBOX_ROOT="${root}/sandbox" \
+              VFS_PROC_STORE_ROOT="${root}/proc-store" \
+              VFS_SVC_STORE_ROOT="${root}/svc-store" \
+              VFS_LISTEN="unix://${sock}" \
+              "$bin" >"${root}/probe.log" 2>&1 &
+              pid=$!
+
+              ok=0
+              i=0
+              while [ "$i" -lt 80 ]; do
+                if [ -S "${sock}" ]; then
+                  ok=1
+                  break
+                fi
+                if ! kill -0 "$pid" 2>/dev/null; then
+                  break
+                fi
+                i=$((i + 1))
+                sleep 0.1
+              done
+
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+
+              if [ "$ok" -ne 1 ]; then
+                echo "probe failed for ${asset_name}"
+                tail -n 80 "${root}/probe.log" || true
+                exit 1
+              fi
+            '
+
+  release:
+    needs: [build, smoke]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/vfs-v')
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+            version="${release_tag#vfs-v}"
+          else
+            release_tag="${{ inputs.release_tag }}"
+            version="${{ inputs.vfs_version }}"
+            if [[ -z "$version" ]]; then
+              version="${release_tag#vfs-v}"
+            fi
+          fi
+
+          if [[ ! "$release_tag" =~ ^vfs-v.+$ ]]; then
+            echo "release_tag must match vfs-v*" >&2
+            exit 1
+          fi
+
+          {
+            echo "release_tag=${release_tag}"
+            echo "version=${version}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Prepare assets and manifest
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+          VFS_VERSION: ${{ steps.meta.outputs.version }}
+          VFS_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+
+          for arch in amd64 arm64; do
+            for libc in musl gnu; do
+              name="memory-vfs-linux-${arch}-${libc}"
+              cp "dist/${name}/${name}" "assets/${name}"
+              cp "dist/${name}/${name}.sha256" "assets/${name}.sha256"
+            done
+          done
+
+          cat assets/*.sha256 | sort > assets/checksums.txt
+          export VFS_COMMIT="$(git -C src/vfs rev-parse HEAD)"
+          export GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          release_tag = os.environ["RELEASE_TAG"]
+          version = os.environ["VFS_VERSION"]
+          vfs_commit = os.environ["VFS_COMMIT"]
+          generated_at = os.environ["GENERATED_AT"]
+
+          checksums = {}
+          with open("assets/checksums.txt", "r", encoding="utf-8") as f:
+            for line in f:
+              line = line.strip()
+              if not line:
+                continue
+              sha, filename = line.split(maxsplit=1)
+              checksums[filename.strip()] = sha
+
+          artifacts = []
+          for asset_name, sha in sorted(checksums.items()):
+            m = re.fullmatch(r"memory-vfs-linux-(amd64|arm64)-(musl|gnu)", asset_name)
+            if not m:
+              continue
+            arch, libc = m.group(1), m.group(2)
+            artifacts.append(
+              {
+                "asset_name": asset_name,
+                "arch": arch,
+                "libc": libc,
+                "sha256": sha,
+                "url": f"https://github.com/{repo}/releases/download/{release_tag}/{asset_name}",
+              }
+            )
+
+          manifest = {
+            "version": version,
+            "release_tag": release_tag,
+            "vfs_commit": vfs_commit,
+            "generated_at": generated_at,
+            "artifacts": artifacts,
+          }
+
+          pathlib.Path("assets/vfs-manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+          )
+          PY
+
+      - name: Publish GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.release_tag }}
+          name: VFS ${{ steps.meta.outputs.version }}
+          overwrite_files: true
+          files: |
+            assets/memory-vfs-linux-amd64-musl
+            assets/memory-vfs-linux-amd64-gnu
+            assets/memory-vfs-linux-arm64-musl
+            assets/memory-vfs-linux-arm64-gnu
+            assets/checksums.txt
+            assets/vfs-manifest.json

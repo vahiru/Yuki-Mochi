@@ -10,6 +10,8 @@ const PROJECT_ROOT = path.resolve(import.meta.dir, "../../");
 const MEMORY_FILES_ROOT = path.join(PROJECT_ROOT, ".runtime/memory_files");
 const EVOLUTIONS_ROOT = path.join(PROJECT_ROOT, ".runtime/evolutions");
 const ENV_PATH = path.join(PROJECT_ROOT, ".env");
+const VFS_STATUS_PATH = path.join(PROJECT_ROOT, ".runtime/bin/vfs-selected.json");
+const VFS_ERROR_LOG_PATH = path.join(PROJECT_ROOT, ".runtime/bin/vfs-resolver-error.log");
 const PORT = Number(process.env.DASHBOARD_PORT || 8080);
 
 const app = new Elysia()
@@ -79,6 +81,49 @@ const app = new Elysia()
     } catch (e) {}
 
     return { services, adapter: { status: adapterStatus, bot: botInfo }, timestamp: Date.now() };
+  })
+
+  .get("/api/setup/vfs-binary-status", async () => {
+    let status: Record<string, unknown> | null = null;
+    try {
+      status = JSON.parse(await fs.readFile(VFS_STATUS_PATH, "utf-8")) as Record<string, unknown>;
+    } catch {
+      status = null;
+    }
+
+    let lastFailure: string | null = null;
+    try {
+      const raw = await fs.readFile(VFS_ERROR_LOG_PATH, "utf-8");
+      const lines = raw.trim().split(/\r?\n/).filter(Boolean);
+      lastFailure = lines.length > 0 ? lines[lines.length - 1] : null;
+    } catch {
+      lastFailure = null;
+    }
+
+    const selectedBinaryPath =
+      status && typeof status.selected_binary_path === "string"
+        ? status.selected_binary_path
+        : null;
+
+    let executable = false;
+    if (selectedBinaryPath) {
+      try {
+        await fs.access(selectedBinaryPath);
+        executable = true;
+      } catch {
+        executable = false;
+      }
+    }
+
+    return {
+      status,
+      lastFailure,
+      selectedBinaryPath,
+      executable,
+      statusFile: VFS_STATUS_PATH,
+      errorLog: VFS_ERROR_LOG_PATH,
+      timestamp: Date.now(),
+    };
   })
 
   // --- File Management Helpers ---

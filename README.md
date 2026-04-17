@@ -123,27 +123,42 @@ ollama serve
 
 If your host user cannot access `containerd.sock`, run the project in Docker as root and mount the host socket:
 
+Detailed guide: `docs/deployment.md`
+
 Set required secrets before starting:
 
 ```bash
 export BOT_TOKEN="your_telegram_bot_token"
-export API_KEY="your_llm_api_key"
+export ENCLAVE_API_KEY="your_llm_api_key"
+export CLOUD_API_KEY="your_llm_api_key"
+export KAIROS_VFS_VERSION="1.0.0"
 ```
 
-Build `memory-vfs` artifact on host (faster than compiling in Docker):
+Start directly:
+
+```bash
+docker compose up -d --build app
+```
+
+The app resolves `memory-vfs` from GitHub Release assets automatically:
+
+- 4 artifacts are supported: `linux-amd64-musl`, `linux-amd64-gnu`, `linux-arm64-musl`, `linux-arm64-gnu`
+- default resolver strategy is `musl -> gnu` (`KAIROS_VFS_BIN_STRATEGY=auto`)
+- selected binary status is written to `.runtime/bin/vfs-selected.json`
+
+Developer fallback (optional): provide local `.artifacts/memory-vfs` and skip remote resolution.
 
 ```bash
 bash scripts/build-vfs.sh --release
-# or:
-bash scripts/build-vfs.sh --debug
 ```
 
-`build-vfs.sh` defaults to Docker backend (`rust:bookworm`) to avoid glibc mismatch
-between host-built binaries and Debian runtime container. Use `--native` only when
-your host libc is compatible with container runtime.
+`scripts/build-vfs.sh` is now a developer fallback path. End users do not need Rust/Cargo locally.
+
+Optional dashboard API for resolver status:
 
 ```bash
-docker compose up --build app
+docker compose --profile dashboard up -d dashboard
+# GET /api/setup/vfs-binary-status (Bearer token from DASHBOARD_AUTH_TOKEN)
 ```
 
 ### Common UDS troubleshooting (`state-daemon` -> `enclave-runtime`):

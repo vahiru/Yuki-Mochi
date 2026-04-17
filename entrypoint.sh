@@ -7,10 +7,20 @@ bun install --frozen-lockfile || bun install
 
 vfs_bin='/opt/artifacts/memory-vfs'
 vfs_socket='/run/kairos-runtime/sockets/kairos-runtime-vfs.sock'
+resolver='/workspace/scripts/resolve-vfs-binary.sh'
 
 if [ ! -x "$vfs_bin" ]; then
-  echo "[app] Error: missing vfs artifact at $vfs_bin"
-  exit 1
+  if [ ! -f "$resolver" ]; then
+    echo "[app] Error: missing resolver script at $resolver"
+    exit 1
+  fi
+  echo '[app] Resolving VFS binary from GitHub Release assets...'
+  if ! vfs_bin="$(bash "$resolver")"; then
+    echo '[app] Error: VFS binary resolution failed.'
+    echo '[app] Hint: set KAIROS_VFS_VERSION or provide local fallback .artifacts/memory-vfs'
+    exit 1
+  fi
+  echo "[app] Selected VFS binary: $vfs_bin"
 fi
 
 echo "[app] Starting memory-vfs with socket $vfs_socket..."
