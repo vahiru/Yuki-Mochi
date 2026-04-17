@@ -50,13 +50,29 @@ jobs:
         with:
           tool: cross
 
+      - name: Install pinned protoc
+        shell: bash
+        env:
+          PROTOC_VERSION: "21.12"
+        run: |
+          set -euo pipefail
+          mkdir -p .tools/protoc
+          curl -fsSL -o /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          unzip -o /tmp/protoc.zip -d .tools/protoc
+          chmod +x .tools/protoc/bin/protoc
+          .tools/protoc/bin/protoc --version
+
       - name: Build logos-kernel
         shell: bash
         env:
           CROSS_CONFIG: ${{ github.workspace }}/Cross.toml
+          PROTOC: /project/.tools/protoc/bin/protoc
+          PROTOC_INCLUDE: /project/.tools/protoc/include
         run: |
           set -euo pipefail
           echo "[build] using CROSS_CONFIG=${CROSS_CONFIG}"
+          echo "[build] using PROTOC=${PROTOC}"
           cross build \
             --manifest-path src/vfs/Cargo.toml \
             -p logos-kernel \
