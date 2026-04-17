@@ -52,8 +52,11 @@ jobs:
 
       - name: Build logos-kernel
         shell: bash
+        env:
+          CROSS_CONFIG: ${{ github.workspace }}/Cross.toml
         run: |
           set -euo pipefail
+          echo "[build] using CROSS_CONFIG=${CROSS_CONFIG}"
           cross build \
             --manifest-path src/vfs/Cargo.toml \
             -p logos-kernel \
