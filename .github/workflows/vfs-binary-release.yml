@@ -74,7 +74,14 @@ jobs:
           set -euo pipefail
           if [[ "${{ matrix.target }}" == x86_64-* ]]; then
             echo "[build] native cargo build for target=${{ matrix.target }}"
-            export PROTOC="$(command -v protoc)"
+            REAL_PROTOC="$(command -v protoc)"
+            PROTOC_WRAPPER="${RUNNER_TEMP}/protoc-wrapper"
+            cat >"${PROTOC_WRAPPER}" <<EOF
+#!/usr/bin/env bash
+exec "${REAL_PROTOC}" --experimental_allow_proto3_optional "\$@"
+EOF
+            chmod +x "${PROTOC_WRAPPER}"
+            export PROTOC="${PROTOC_WRAPPER}"
             for include_dir in /usr/include /usr/local/include; do
               if [[ -f "${include_dir}/google/protobuf/empty.proto" ]]; then
                 export PROTOC_INCLUDE="${include_dir}"
