@@ -46,9 +46,25 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cross
+        if: startsWith(matrix.target, 'aarch64-')
         uses: taiki-e/install-action@v2
         with:
           tool: cross
+
+      - name: Install Rust target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add "${{ matrix.target }}"
+
+      - name: Install native build deps for x86_64
+        if: startsWith(matrix.target, 'x86_64-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler musl-tools
+          protoc --version
 
       - name: Build logos-kernel
         shell: bash
@@ -56,12 +72,21 @@ jobs:
           CROSS_CONFIG: ${{ github.workspace }}/Cross.toml
         run: |
           set -euo pipefail
-          echo "[build] using CROSS_CONFIG=${CROSS_CONFIG}"
-          cross build \
-            --manifest-path src/vfs/Cargo.toml \
-            -p logos-kernel \
-            --release \
-            --target "${{ matrix.target }}"
+          if [[ "${{ matrix.target }}" == x86_64-* ]]; then
+            echo "[build] native cargo build for target=${{ matrix.target }}"
+            cargo build \
+              --manifest-path src/vfs/Cargo.toml \
+              -p logos-kernel \
+              --release \
+              --target "${{ matrix.target }}"
+          else
+            echo "[build] cross build for target=${{ matrix.target }} with CROSS_CONFIG=${CROSS_CONFIG}"
+            cross build \
+              --manifest-path src/vfs/Cargo.toml \
+              -p logos-kernel \
+              --release \
+              --target "${{ matrix.target }}"
+          fi
 
       - name: Package binary + checksum
         shell: bash
