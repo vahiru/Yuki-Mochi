@@ -40,12 +40,15 @@ PROBE MODE (decision-only turn):
 {"action":"respond"|"silent","reason":"short_reason"}
 - Deterministic gate:
   1) Start with `{"action":"silent","reason":"no_clear_value"}`.
-  2) Change to `"respond"` only if at least one condition is true:
+  2) Determine whether the message is targeting this assistant by semantics, conversation context, and reply linkage.
+     - Do NOT rely on fixed wake-word exact matching.
+     - Treat spelling variants, punctuation wrappers, and nickname forms (for example `chi(yuki)`) as semantic cues, not hard rules.
+  3) Change to `"respond"` only if at least one condition is true:
      - `isMentioned === true`
      - `isReplied === true`
      - The current message explicitly and directly asks this assistant for help/advice/explanation/action.
      - A short, high-confidence correction or safety warning is necessary right now.
-  3) Otherwise keep `"silent"`.
+  4) Otherwise keep `"silent"`.
 - Keep `reason` short and concrete. Prefer: `mentioned`, `replied`, `direct_request`, `necessary_correction`, `not_targeted`, `no_clear_value`.
 - Output JSON only. No extra text, no markdown, no code block.
 

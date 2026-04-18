@@ -112,6 +112,8 @@ const DEFAULT_LONG_WAIT_HINT_DELAY_MS = 120000;
 const TYPING_REFRESH_MS = 4000;
 const DEFAULT_SEND_MESSAGE_MODE = "strict";
 const DEFAULT_GROUP_REPLY_SOFT_LIMIT = 400;
+const DEFAULT_PROBE_SILENT_COOLDOWN_MS = 5000;
+const DEFAULT_PROBE_RESPOND_COOLDOWN_MS = 45000;
 type SendMessageMode = "strict" | "compat";
 
 function resolveSendMessageMode(): SendMessageMode {
@@ -145,6 +147,30 @@ function resolveGroupReplySoftLimit(): number {
     return DEFAULT_GROUP_REPLY_SOFT_LIMIT;
   }
   return Math.min(4000, Math.max(20, parsed));
+}
+
+function resolveProbeSilentCooldownMs(): number {
+  const raw = process.env.TRIGGER_PROBE_SILENT_COOLDOWN_MS?.trim();
+  if (!raw) {
+    return DEFAULT_PROBE_SILENT_COOLDOWN_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_PROBE_SILENT_COOLDOWN_MS;
+  }
+  return parsed;
+}
+
+function resolveProbeRespondCooldownMs(fallbackMs: number): number {
+  const raw = process.env.TRIGGER_PROBE_RESPOND_COOLDOWN_MS?.trim();
+  if (!raw) {
+    return fallbackMs;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallbackMs;
+  }
+  return parsed;
 }
 
 function isGroupConversationType(conversationType: TelegramMessage["conversationType"]): boolean {
@@ -267,11 +293,17 @@ export function createMessageGateway(
     (a, b) => a.priority - b.priority
   );
   const probeEnabled = options.probe?.enabled ?? false;
-  const probeCooldownMs = Math.max(0, options.probe?.cooldownMs ?? 45000);
+  const configuredProbeCooldownMs = Math.max(
+    0,
+    options.probe?.cooldownMs ?? DEFAULT_PROBE_RESPOND_COOLDOWN_MS
+  );
+  const probeSilentCooldownMs = resolveProbeSilentCooldownMs();
+  const probeRespondCooldownMs = resolveProbeRespondCooldownMs(configuredProbeCooldownMs);
   const sendMessageMode = resolveSendMessageMode();
   const longWaitHintDelayMs = resolveLongWaitHintDelayMs();
   const groupReplySoftLimit = resolveGroupReplySoftLimit();
   const lastProbeAtByChat = new Map<number, number>();
+  const lastProbeRespondAtByChat = new Map<number, number>();
 
   const recordNormalizedMessage = async (message: TelegramMessage) => {
     try {
@@ -320,22 +352,44 @@ export function createMessageGateway(
       }
       const now = Date.now();
       const lastProbeAt = lastProbeAtByChat.get(message.chatId) ?? 0;
-      if (now - lastProbeAt < probeCooldownMs) {
+      if (now - lastProbeAt < probeSilentCooldownMs) {
+        console.log(
+          `[probe] chat=${message.chatId} messageId=${message.messageId} cooldown_hit=silent shouldReply=false reason=silent_cooldown latency_ms=0`
+        );
         return;
       }
-      lastProbeAtByChat.set(message.chatId, now);
+      const lastProbeRespondAt = lastProbeRespondAtByChat.get(message.chatId) ?? 0;
+      if (now - lastProbeRespondAt < probeRespondCooldownMs) {
+        console.log(
+          `[probe] chat=${message.chatId} messageId=${message.messageId} cooldown_hit=respond shouldReply=false reason=respond_cooldown latency_ms=0`
+        );
+        return;
+      }
+      const startedAt = Date.now();
       try {
         const probeResult = await options.runtime.probeShouldReply({
           triggerMessage: message,
         });
+        const finishedAt = Date.now();
+        const latencyMs = finishedAt - startedAt;
+        lastProbeAtByChat.set(message.chatId, finishedAt);
+        if (probeResult.shouldReply) {
+          lastProbeRespondAtByChat.set(message.chatId, finishedAt);
+        }
         console.log(
-          `[probe] chat=${message.chatId} messageId=${message.messageId} shouldReply=${probeResult.shouldReply} reason=${probeResult.reason}`
+          `[probe] chat=${message.chatId} messageId=${message.messageId} cooldown_hit=none shouldReply=${probeResult.shouldReply} reason=${probeResult.reason} latency_ms=${latencyMs}`
         );
         if (!probeResult.shouldReply) {
           return;
         }
       } catch (error) {
-        console.error("message gateway probe failed, suppressing auto-reply:", error);
+        const finishedAt = Date.now();
+        const latencyMs = finishedAt - startedAt;
+        lastProbeAtByChat.set(message.chatId, finishedAt);
+        console.error(
+          `[probe] chat=${message.chatId} messageId=${message.messageId} cooldown_hit=none shouldReply=false reason=probe_error latency_ms=${latencyMs}`,
+          error
+        );
         return;
       }
     }
