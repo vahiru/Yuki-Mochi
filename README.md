@@ -126,6 +126,12 @@ If your host user cannot access `containerd.sock`, run the project in Docker as 
 Detailed guide: `docs/deployment.md`
 Launch acceptance checklist: `docs/launch-acceptance-checklist.md`
 
+Recommended first-time path:
+
+```bash
+bash scripts/deploy-wizard.sh
+```
+
 Set required secrets before starting:
 
 ```bash

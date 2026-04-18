@@ -4,6 +4,14 @@ Launch acceptance checklist: `docs/launch-acceptance-checklist.md`
 
 ## Quick Start
 
+Recommended for first-time users:
+
+```bash
+bash scripts/deploy-wizard.sh
+```
+
+The wizard updates `.env` interactively and starts `docker compose`.
+
 Set required env vars:
 
 ```bash
