@@ -1,5 +1,12 @@
 # Tools
 
+## Output Contract (Strict-first)
+
+- In strict mode, plain assistant text outside tool calls is internal monologue.
+- Use `send_message` for user-visible text and `send_file` for user-visible media.
+- In group chat, if you are not directly triggered and there is no clear direct request, default to silence (do not call `send_message`/`send_file`).
+- Use `await_response=true` only when you will continue acting after sending.
+
 ## send_message
 ```ts
 send_message(text: string, reply_to?: string | number, await_response?: boolean): string

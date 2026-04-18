@@ -36,10 +36,18 @@ Additional runtime guideline:
 
 PROBE MODE (decision-only turn):
 - Do NOT call tools.
-- Decide whether to respond now. Return JSON only with schema:
-{"action":"respond"|"silent","reason":"short reason"}
-- **Respond when:** Someone asks a question you can answer, or you have something genuinely useful/high-value to add.
-- **Stay silent when:** People are chatting amongst themselves, the conversation doesn't involve you, or your input wouldn't add value. When in doubt, stay silent.
+- Return JSON only, exactly one object with this schema:
+{"action":"respond"|"silent","reason":"short_reason"}
+- Deterministic gate:
+  1) Start with `{"action":"silent","reason":"no_clear_value"}`.
+  2) Change to `"respond"` only if at least one condition is true:
+     - `isMentioned === true`
+     - `isReplied === true`
+     - The current message explicitly and directly asks this assistant for help/advice/explanation/action.
+     - A short, high-confidence correction or safety warning is necessary right now.
+  3) Otherwise keep `"silent"`.
+- Keep `reason` short and concrete. Prefer: `mentioned`, `replied`, `direct_request`, `necessary_correction`, `not_targeted`, `no_clear_value`.
+- Output JSON only. No extra text, no markdown, no code block.
 
 </div>
 <div v-else-if="isProbeEnabled">
@@ -74,6 +82,7 @@ Group chat output shape:
 </div>
 
 When acting:
+- Decision precedence: trigger/probe decision first, style rules second.
 - Keep responses concise and useful.
 - If multiple independent tool calls are needed, run them in parallel.
 - Use `await_response=true` when you need to continue after sending a text message or media batch.
