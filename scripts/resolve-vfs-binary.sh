@@ -7,6 +7,7 @@ BIN_DIR="${KAIROS_VFS_BIN_DIR:-${ROOT_DIR}/.runtime/bin}"
 STATUS_FILE="${BIN_DIR}/vfs-selected.json"
 ERROR_LOG="${BIN_DIR}/vfs-resolver-error.log"
 SELECTED_LINK="${BIN_DIR}/memory-vfs-selected"
+VFS_REPO="${KAIROS_VFS_REPO:-vahiru/Yuki-Mochi}"
 LAST_FAILURE=""
 PROBE_FAILURE_REASON=""
 
@@ -65,6 +66,88 @@ resolve_strategy() {
       return 1
       ;;
   esac
+}
+
+curl_json() {
+  local url="$1"
+  local output="$2"
+
+  local auth_token="${KAIROS_VFS_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
+  local curl_args=(
+    -fsSL
+    --retry 3
+    --retry-all-errors
+    -H "Accept: application/vnd.github+json"
+    -H "User-Agent: kairos-vfs-resolver"
+  )
+  if [[ -n "${auth_token}" ]]; then
+    curl_args+=(-H "Authorization: Bearer ${auth_token}")
+  fi
+
+  curl "${curl_args[@]}" "${url}" -o "${output}"
+}
+
+discover_latest_vfs_release() {
+  local releases_api="${KAIROS_VFS_RELEASES_API_URL:-https://api.github.com/repos/${VFS_REPO}/releases?per_page=30}"
+  local releases_json="${BIN_DIR}/github-releases.json"
+
+  if ! curl_json "${releases_api}" "${releases_json}"; then
+    append_error "failed to query GitHub releases API: ${releases_api}"
+    return 1
+  fi
+
+  python3 - "${releases_json}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+if isinstance(data, dict):
+    if "message" in data:
+        print(data["message"], file=sys.stderr)
+        sys.exit(2)
+    data = [data]
+
+def is_vfs_release(item):
+    tag = str(item.get("tag_name", ""))
+    if not tag.startswith("vfs-v"):
+        return False
+    if item.get("draft"):
+        return False
+    return True
+
+stable = [r for r in data if is_vfs_release(r) and not r.get("prerelease")]
+fallback = [r for r in data if is_vfs_release(r)]
+candidates = stable if stable else fallback
+
+if not candidates:
+    sys.exit(1)
+
+tag = str(candidates[0].get("tag_name", ""))
+version = tag[len("vfs-v"):]
+if not version:
+    sys.exit(1)
+
+print(f"{tag}\t{version}")
+PY
+}
+
+read_manifest_metadata() {
+  local manifest_path="$1"
+  python3 - "${manifest_path}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+version = str(data.get("version", "") or "")
+release_tag = str(data.get("release_tag", "") or "")
+print(f"{version}\t{release_tag}")
+PY
 }
 
 probe_binary() {
@@ -254,20 +337,53 @@ strategy="$(resolve_strategy)" || {
 }
 
 version="${KAIROS_VFS_VERSION:-}"
-if [[ -z "${version}" ]]; then
-  append_error "KAIROS_VFS_VERSION is required when /opt/artifacts/memory-vfs is unavailable."
-  write_status_failed "missing" "missing" "${arch}" "${strategy}" "n/a" "${LAST_FAILURE}"
-  exit 1
+release_tag=""
+if [[ -n "${version}" ]]; then
+  release_tag="vfs-v${version}"
 fi
 
-release_tag="vfs-v${version}"
-manifest_url="${KAIROS_VFS_MANIFEST_URL:-https://github.com/vahiru/Yuki-Mochi/releases/download/${release_tag}/vfs-manifest.json}"
-MANIFEST_PATH="${BIN_DIR}/vfs-manifest-${version}.json"
+manifest_url="${KAIROS_VFS_MANIFEST_URL:-}"
+if [[ -z "${manifest_url}" && -z "${release_tag}" ]]; then
+  discovered=""
+  if ! discovered="$(discover_latest_vfs_release)"; then
+    append_error "failed to auto-detect latest vfs-v* release; set KAIROS_VFS_VERSION or KAIROS_VFS_MANIFEST_URL explicitly"
+    write_status_failed "auto" "auto" "${arch}" "${strategy}" "n/a" "${LAST_FAILURE}"
+    exit 1
+  fi
+  IFS=$'\t' read -r release_tag version <<< "${discovered}"
+  log "auto-detected VFS release: ${release_tag}"
+fi
+
+if [[ -z "${manifest_url}" ]]; then
+  manifest_url="https://github.com/${VFS_REPO}/releases/download/${release_tag}/vfs-manifest.json"
+fi
+
+manifest_cache_key="${version:-${release_tag:-custom}}"
+manifest_cache_key="$(echo "${manifest_cache_key}" | tr -c 'A-Za-z0-9._-' '_')"
+MANIFEST_PATH="${BIN_DIR}/vfs-manifest-${manifest_cache_key}.json"
 
 if ! curl -fsSL --retry 3 --retry-all-errors "${manifest_url}" -o "${MANIFEST_PATH}"; then
   append_error "failed to download manifest: ${manifest_url}"
-  write_status_failed "${version}" "${release_tag}" "${arch}" "${strategy}" "${manifest_url}" "${LAST_FAILURE}"
+  write_status_failed "${version:-unknown}" "${release_tag:-unknown}" "${arch}" "${strategy}" "${manifest_url}" "${LAST_FAILURE}"
   exit 1
+fi
+
+manifest_meta="$(read_manifest_metadata "${MANIFEST_PATH}" || true)"
+if [[ -n "${manifest_meta}" ]]; then
+  IFS=$'\t' read -r manifest_version manifest_release_tag <<< "${manifest_meta}"
+  if [[ -n "${manifest_version}" ]]; then
+    version="${manifest_version}"
+  fi
+  if [[ -n "${manifest_release_tag}" ]]; then
+    release_tag="${manifest_release_tag}"
+  fi
+fi
+
+if [[ -z "${version}" ]]; then
+  version="unknown"
+fi
+if [[ -z "${release_tag}" ]]; then
+  release_tag="unknown"
 fi
 
 mapfile -t candidates < <(

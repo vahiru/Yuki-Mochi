@@ -176,7 +176,10 @@ cloud_key="$(prompt_value "STATE_DAEMON_CLOUD_API_KEY (optional)" "${cloud_key_d
 upsert_env "STATE_DAEMON_CLOUD_API_KEY" "${cloud_key}"
 
 vfs_version_default="$(get_env_value "KAIROS_VFS_VERSION")"
-vfs_version="$(prompt_required "KAIROS_VFS_VERSION (example: 0.0.1)" "${vfs_version_default}")"
+vfs_version="$(prompt_value "KAIROS_VFS_VERSION (optional, blank = auto-detect latest)" "${vfs_version_default}")"
+if [[ "${vfs_version}" == "auto" ]]; then
+  vfs_version=""
+fi
 upsert_env "KAIROS_VFS_VERSION" "${vfs_version}"
 
 strategy_default="$(get_env_value "KAIROS_VFS_BIN_STRATEGY")"

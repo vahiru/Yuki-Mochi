@@ -17,7 +17,7 @@ if [ ! -x "$vfs_bin" ]; then
   echo '[app] Resolving VFS binary from GitHub Release assets...'
   if ! vfs_bin="$(bash "$resolver")"; then
     echo '[app] Error: VFS binary resolution failed.'
-    echo '[app] Hint: set KAIROS_VFS_VERSION or provide local fallback .artifacts/memory-vfs'
+    echo '[app] Hint: pin KAIROS_VFS_VERSION, or use auto-detect latest release, or provide local fallback .artifacts/memory-vfs'
     exit 1
   fi
   echo "[app] Selected VFS binary: $vfs_bin"

@@ -138,6 +138,7 @@ Set required secrets before starting:
 export BOT_TOKEN="your_telegram_bot_token"
 export ENCLAVE_API_KEY="your_llm_api_key"
 export CLOUD_API_KEY="your_llm_api_key"
+# optional: pin VFS version; leave empty to auto-detect latest vfs-v* release
 export KAIROS_VFS_VERSION="1.0.0"
 ```
 
@@ -151,6 +152,7 @@ The app resolves `memory-vfs` from GitHub Release assets automatically:
 
 - 4 artifacts are supported: `linux-amd64-musl`, `linux-amd64-gnu`, `linux-arm64-musl`, `linux-arm64-gnu`
 - default resolver strategy is `musl -> gnu` (`KAIROS_VFS_BIN_STRATEGY=auto`)
+- `KAIROS_VFS_VERSION` is optional; if unset, runtime auto-detects latest `vfs-v*` release
 - selected binary status is written to `.runtime/bin/vfs-selected.json`
 
 Developer fallback (optional): provide local `.artifacts/memory-vfs` and skip remote resolution.

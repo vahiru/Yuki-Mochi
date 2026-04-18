@@ -10,7 +10,7 @@ Goal: from empty environment to first bot reply in `<= 15 minutes`, with dual-li
   - `BOT_TOKEN`
   - `ENCLAVE_API_KEY`
   - `CLOUD_API_KEY`
-  - `KAIROS_VFS_VERSION`
+  - `KAIROS_VFS_VERSION` (recommended for pinned release acceptance; optional in auto-detect mode)
 
 ## 2. Build and release checks (GitHub Actions)
 

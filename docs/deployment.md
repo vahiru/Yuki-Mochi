@@ -21,6 +21,7 @@ cp .env.example .env
 export BOT_TOKEN="your_telegram_bot_token"
 export ENCLAVE_API_KEY="your_llm_api_key"
 export CLOUD_API_KEY="your_llm_api_key"
+# optional: pin VFS version; leave empty to auto-detect latest vfs-v* release
 export KAIROS_VFS_VERSION="1.0.0"
 ```
 
@@ -44,6 +45,7 @@ Resolver defaults:
 - `KAIROS_VFS_BIN_STRATEGY=auto` (`musl -> gnu`)
 - `KAIROS_VFS_ARCH` auto-detected by `uname -m`
 - `KAIROS_VFS_BIN_DIR=.runtime/bin`
+- `KAIROS_VFS_VERSION` optional (unset = auto-detect latest `vfs-v*`)
 
 Status files:
 
