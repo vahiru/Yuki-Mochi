@@ -124,6 +124,7 @@ ollama serve
 If your host user cannot access `containerd.sock`, run the project in Docker as root and mount the host socket:
 
 Detailed guide: `docs/deployment.md`
+Launch acceptance checklist: `docs/launch-acceptance-checklist.md`
 
 Set required secrets before starting:
 

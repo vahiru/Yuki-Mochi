@@ -1,5 +1,7 @@
 # Deployment Guide (Linux + Docker)
 
+Launch acceptance checklist: `docs/launch-acceptance-checklist.md`
+
 ## Quick Start
 
 Set required env vars:
