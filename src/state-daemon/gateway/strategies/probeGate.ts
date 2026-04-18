@@ -14,6 +14,11 @@ export function createProbeGateTriggerPolicy(): GatewayTriggerPolicy {
       if (message.metadata.isMentionMe || message.metadata.isReplyToMe) {
         return { shouldTrigger: false, reason: "none" };
       }
+      // If this message is a reply to someone else (not to me), do not interject.
+      // This avoids probe replies inside person-to-person threaded exchanges.
+      if (message.metadata.replyToMessageId !== null) {
+        return { shouldTrigger: false, reason: "none" };
+      }
 
       const prompt = message.context.trim();
       if (!prompt || prompt.startsWith("/")) {
