@@ -33,7 +33,8 @@ get_env_value() {
     echo ""
     return
   fi
-  echo "${line#*=}"
+  # Trim CR from CRLF files.
+  printf '%s' "${line#*=}" | tr -d '\r'
 }
 
 upsert_env() {
@@ -77,7 +78,8 @@ prompt_value() {
     else
       read -r -s -p "${label}: " value
     fi
-    echo
+    # Keep this on stderr so command substitution does not capture it.
+    printf '\n' >&2
   else
     if [[ -n "${default}" ]]; then
       read -r -p "${label} [${default}]: " value
@@ -89,7 +91,9 @@ prompt_value() {
   if [[ -z "${value}" ]]; then
     value="${default}"
   fi
-  echo "${value}"
+  # Normalize accidental CR/LF from paste/default values.
+  value="$(printf '%s' "${value}" | tr -d '\r\n')"
+  printf '%s\n' "${value}"
 }
 
 prompt_required() {
