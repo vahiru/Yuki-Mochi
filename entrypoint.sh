@@ -20,6 +20,17 @@ if [ ! -x "$vfs_bin" ]; then
     echo '[app] Hint: pin KAIROS_VFS_VERSION, or use auto-detect latest release, or provide local fallback .artifacts/memory-vfs'
     exit 1
   fi
+  # Normalize resolver output to avoid hidden CR/LF or relative-path surprises.
+  vfs_bin="$(printf '%s' "$vfs_bin" | tr -d '\r\n')"
+  case "$vfs_bin" in
+    /*) ;;
+    *) vfs_bin="/workspace/${vfs_bin#./}" ;;
+  esac
+  if [ ! -x "$vfs_bin" ]; then
+    echo "[app] Error: resolved VFS binary is not executable: $vfs_bin"
+    ls -la /workspace/.runtime/bin || true
+    exit 1
+  fi
   echo "[app] Selected VFS binary: $vfs_bin"
 fi
 
