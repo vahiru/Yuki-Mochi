@@ -3,7 +3,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL_FALLBACK="/opt/artifacts/memory-vfs"
-BIN_DIR="${KAIROS_VFS_BIN_DIR:-${ROOT_DIR}/.runtime/bin}"
+RAW_BIN_DIR="${KAIROS_VFS_BIN_DIR:-${ROOT_DIR}/.runtime/bin}"
+if [[ "${RAW_BIN_DIR}" = /* ]]; then
+  BIN_DIR="${RAW_BIN_DIR}"
+else
+  BIN_DIR="${ROOT_DIR}/${RAW_BIN_DIR#./}"
+fi
 STATUS_FILE="${BIN_DIR}/vfs-selected.json"
 ERROR_LOG="${BIN_DIR}/vfs-resolver-error.log"
 SELECTED_LINK="${BIN_DIR}/memory-vfs-selected"
@@ -26,10 +31,18 @@ append_error() {
 
 set_selected_binary() {
   local src="$1"
-  if ln -sf "${src}" "${SELECTED_LINK}" 2>/dev/null; then
+  local src_abs=""
+
+  if [[ "${src}" = /* ]]; then
+    src_abs="${src}"
+  else
+    src_abs="$(cd "$(dirname "${src}")" && pwd)/$(basename "${src}")"
+  fi
+
+  if ln -sf "${src_abs}" "${SELECTED_LINK}" 2>/dev/null; then
     return 0
   fi
-  cp "${src}" "${SELECTED_LINK}"
+  cp "${src_abs}" "${SELECTED_LINK}"
   chmod +x "${SELECTED_LINK}"
 }
 
