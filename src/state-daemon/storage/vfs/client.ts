@@ -216,9 +216,14 @@ export class MemoryVfsClient {
       return { results: [] };
     }
 
-    const messages = ranked
-      .slice(0, Math.min(outputLimit, SEMANTIC_RESULT_MAX_MESSAGES))
-      .map((item) => item.message);
+    const messages = dedupeSemanticMessages(
+      ranked
+        .slice(0, Math.min(outputLimit, SEMANTIC_RESULT_MAX_MESSAGES))
+        .map((item) => item.message),
+    );
+    if (messages.length === 0) {
+      return { results: [] };
+    }
     const head = messages[0];
     const result: SearchResult = {
       sessionId: buildSyntheticSessionId(head.chatId, head.messageId),
@@ -267,9 +272,14 @@ export class MemoryVfsClient {
     if (ranked.length === 0) {
       return { results: [] };
     }
-    const messages = ranked
-      .slice(0, Math.min(limit, SEMANTIC_RESULT_MAX_MESSAGES))
-      .map((item) => item.message);
+    const messages = dedupeSemanticMessages(
+      ranked
+        .slice(0, Math.min(limit, SEMANTIC_RESULT_MAX_MESSAGES))
+        .map((item) => item.message),
+    );
+    if (messages.length === 0) {
+      return { results: [] };
+    }
     const head = messages[0];
     const result: SearchResult = {
       sessionId: buildSyntheticSessionId(head.chatId, head.messageId),
@@ -365,8 +375,9 @@ export class MemoryVfsClient {
     // Logos: archive = write each message to memory, then write summary
     // Messages are stored individually via logos://memory/groups/{chat_id}/messages
     for (const msg of request.messages) {
+      const normalizedTsMs = normalizeTimestamp(msg.timestamp);
       const msgJson = JSON.stringify({
-        ts: new Date(Number(msg.timestamp) * 1000).toISOString(),
+        ts: new Date(normalizedTsMs).toISOString(),
         chat_id: msg.chatId,
         speaker: msg.userId,
         reply_to: msg.metadata?.replyToMessageId
@@ -548,7 +559,7 @@ function parseMentions(value: unknown): string[] {
 
 function normalizeTimestamp(value: unknown): number {
   if (typeof value === "number" && Number.isFinite(value)) {
-    return value > 1e12 ? Math.floor(value) : Math.floor(value * 1000);
+    return normalizeEpochMs(value);
   }
   if (typeof value !== "string") {
     return Date.now();
@@ -561,15 +572,61 @@ function normalizeTimestamp(value: unknown): number {
 
   const asNumber = Number(trimmed);
   if (Number.isFinite(asNumber)) {
-    return asNumber > 1e12 ? Math.floor(asNumber) : Math.floor(asNumber * 1000);
+    return normalizeEpochMs(asNumber);
   }
 
   const parsed = Date.parse(trimmed);
   if (Number.isFinite(parsed)) {
-    return parsed;
+    return normalizeEpochMs(parsed);
   }
 
   return Date.now();
+}
+
+function normalizeEpochMs(value: number): number {
+  const truncated = Math.trunc(value);
+  const abs = Math.abs(truncated);
+
+  if (abs >= 1e17) {
+    // nanoseconds
+    return Math.trunc(truncated / 1e6);
+  }
+  if (abs >= 1e14) {
+    // microseconds
+    return Math.trunc(truncated / 1e3);
+  }
+  if (abs >= 1e11) {
+    // milliseconds
+    return truncated;
+  }
+  if (abs >= 1e9) {
+    // seconds
+    return Math.trunc(truncated * 1000);
+  }
+  return Date.now();
+}
+
+function dedupeSemanticMessages(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  const seen = new Set<string>();
+
+  for (const message of messages) {
+    const normalizedTs = normalizeTimestamp(message.timestamp);
+    const secondBucket = Math.trunc(normalizedTs / 1000);
+    const normalizedText = message.context.trim().replace(/\s+/g, " ");
+    const replyTo = (message.metadata?.replyToMessageId ?? "").trim();
+    const key = `${message.userId}|${secondBucket}|${replyTo}|${normalizedText}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push({
+      ...message,
+      timestamp: normalizedTs,
+    });
+  }
+
+  return out;
 }
 
 function toFiniteInt(value: unknown): number | null {

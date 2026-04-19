@@ -684,7 +684,9 @@ async function downgradeExpiredSessions(
     if (now - session.lastActiveTime > expireAfterMs) {
       downgradeSessionStatus(session);
       if (session.status === "L3_ARCHIVED") {
-        await archiveSession(ccb, session, archiverService);
+        if (!isRecoveredSessionId(session.sessionId)) {
+          await archiveSession(ccb, session, archiverService);
+        }
         ccb.sessionControlBlocks.delete(session.sessionId);
         for (const messageId of session.messageIds) {
           ccb.messageNodes.delete(messageId);
@@ -890,6 +892,10 @@ function buildRecoveredSessionId(searchResult: SearchResult, now: number): strin
   return `recalled:${chatId}:${messageId}`;
 }
 
+function isRecoveredSessionId(sessionId: string): boolean {
+  return sessionId.startsWith("recalled:");
+}
+
 function recallSession(ccb: ChatControlBlock, searchResult: SearchResult, now: number): SessionControlBlock | null {
   const session = createSessionFromSearchResult(searchResult, now);
   const recalledNodes: MessageNode[] = [];
@@ -943,7 +949,7 @@ function recallSession(ccb: ChatControlBlock, searchResult: SearchResult, now: n
 function toTelegramMessage(stored: SearchResult["messages"][number]): TelegramMessage | null {
   const messageId = Number(stored.messageId);
   const chatId = Number(stored.chatId);
-  const timestamp = Number(stored.timestamp);
+  const timestamp = normalizeStoredTimestamp(stored.timestamp);
   if (!Number.isFinite(messageId) || !Number.isFinite(chatId) || !Number.isFinite(timestamp)) {
     return null;
   }
@@ -988,6 +994,33 @@ function toTelegramMessage(stored: SearchResult["messages"][number]): TelegramMe
       usernameHandle: metadataExt?.usernameHandle ?? null,
     },
   };
+}
+
+function normalizeStoredTimestamp(value: unknown): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Date.now();
+  }
+  const truncated = Math.trunc(numeric);
+  const abs = Math.abs(truncated);
+
+  if (abs >= 1e17) {
+    // nanoseconds
+    return Math.trunc(truncated / 1e6);
+  }
+  if (abs >= 1e14) {
+    // microseconds
+    return Math.trunc(truncated / 1e3);
+  }
+  if (abs >= 1e11) {
+    // milliseconds
+    return truncated;
+  }
+  if (abs >= 1e9) {
+    // seconds
+    return Math.trunc(truncated * 1000);
+  }
+  return Date.now();
 }
 
 function setSessionActive(ccb: ChatControlBlock, activeSessionId: string): void {
