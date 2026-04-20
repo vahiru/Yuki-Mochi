@@ -30,6 +30,7 @@ export async function renderLateBindingPrompt(
     {
       timeZoneLabel: "Asia/Shanghai",
       ...input,
+      chatId: String(input.chatId),
       conversationType: input.conversationType ?? "private",
       isProbeEnabled: input.isProbeEnabled ?? false,
       isProbing: input.isProbing ?? false,

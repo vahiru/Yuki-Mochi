@@ -9,6 +9,7 @@ import type { AgentLoopStreamEvent } from "./agent/core/loopRunner";
 import { createOpenAIEnclaveRuntime } from "./agent/core/openai";
 import {
   createFetchWebpageTool,
+  createGroupPromptMemoryTool,
   createListFilesSafeTool,
   createReadFileSafeTool,
   createRunSafeBashTool,
@@ -59,6 +60,7 @@ const toolFactories: Record<string, () => any> = {
   list_files_safe: createListFilesSafeTool,
   send_message: createSendMessageTool,
   send_file: createSendFileTool,
+  group_prompt_memory: createGroupPromptMemoryTool,
 };
 
 function parseEnabledToolNames(): Set<string> {

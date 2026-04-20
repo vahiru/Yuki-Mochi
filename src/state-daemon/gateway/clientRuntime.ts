@@ -9,6 +9,7 @@ import {
   createContextAssembler,
   createInMemoryContextStore,
   formatTimeNow,
+  loadGroupPromptByChatId,
   renderLateBindingPrompt,
   renderSystemPrompt,
   type ContextAssembler,
@@ -285,7 +286,10 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
     });
 
     const systemPrompt = await renderSystemPrompt(
-      buildSystemPromptInput({ sendMessageMode }),
+      buildSystemPromptInput({
+        sendMessageMode,
+        groupPrompt: loadGroupPromptByChatId(triggerMessage.chatId),
+      }),
     );
 
     return contextAssembler.build({
@@ -319,6 +323,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
     const sendMessageMode = resolveSendMessageMode();
     const messages = await buildContextMessages(triggerMessage, sendMessageMode);
     const lateBindingPrompt = await renderLateBindingPrompt({
+      chatId: String(triggerMessage.chatId),
       timeNow: formatTimeNow(),
       conversationType: triggerMessage.conversationType,
       isProbeEnabled: true,
@@ -358,6 +363,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
         const llmMessages = await buildContextMessages(triggerMessage, sendMessageMode);
         const normalizedPrompt = prompt.trim();
         const lateBindingPrompt = await renderLateBindingPrompt({
+          chatId: String(triggerMessage.chatId),
           timeNow: formatTimeNow(),
           conversationType: triggerMessage.conversationType,
           isProbeEnabled: isProbeActivated === true,

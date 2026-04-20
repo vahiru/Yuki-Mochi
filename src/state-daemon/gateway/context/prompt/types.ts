@@ -8,9 +8,11 @@ export interface SystemPromptFile {
 export interface RenderSystemPromptInput {
   sendMessageMode: SendMessageMode;
   systemFiles: SystemPromptFile[];
+  groupPrompt?: string;
 }
 
 export interface RenderLateBindingPromptInput {
+  chatId: string | number;
   timeNow: string;
   timeZoneLabel?: string;
   conversationType?: "private" | "group" | "supergroup" | "channel";

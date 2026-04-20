@@ -2,6 +2,7 @@
 defineProps({
   sendMessageMode: { type: String, default: 'strict' },
   systemFiles: { type: Array, default: () => [] },
+  groupPrompt: { type: String, default: '' },
 })
 </script>
 
@@ -106,5 +107,15 @@ Before acting:
 
 ## {{ file.filename }}
 {{ file.content }}
+
+</div>
+
+<div v-if="groupPrompt">
+
+## Chat-Scoped Memory (Highest Priority For Current Chat)
+The following memory is bound to the current `chat_id` scope.
+When this section conflicts with global memory files, follow this chat-scoped memory first.
+
+{{ groupPrompt }}
 
 </div>

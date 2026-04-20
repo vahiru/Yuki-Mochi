@@ -3,6 +3,7 @@ export {
   DEFAULT_TIME_ZONE,
   buildSystemPromptInput,
   formatTimeNow,
+  loadGroupPromptByChatId,
   loadSystemFilesFromMemory,
   resolveMemoryDir,
   resolveSendMessageMode,

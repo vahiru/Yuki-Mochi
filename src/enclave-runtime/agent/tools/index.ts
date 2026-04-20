@@ -5,5 +5,6 @@ export * from "./writeFileSafe";
 export * from "./listFilesSafe";
 export * from "./sendMessage";
 export * from "./sendFile";
+export * from "./groupPromptMemory";
 export * from "./evolute";
 export * from "./apoptosis";

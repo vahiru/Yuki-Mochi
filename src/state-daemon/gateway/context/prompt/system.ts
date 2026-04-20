@@ -7,6 +7,7 @@ const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
 const SHARED_MEMORY_DIR = resolve(CURRENT_DIR, "../../../../.runtime/memory_files");
 const DEFAULT_SEND_MESSAGE_MODE: SendMessageMode = "strict";
 export const DEFAULT_TIME_ZONE = "Asia/Shanghai";
+const GROUP_PROMPT_STORE_FILE = "group-prompts.json";
 
 const DEFAULT_SYSTEM_FILE_NAMES = ["Soul.md", "Identity.md", "Tools.md"] as const;
 
@@ -41,13 +42,54 @@ export function loadSystemFilesFromMemory(
   }));
 }
 
+interface GroupPromptStoreData {
+  version?: unknown;
+  groups?: Record<string, { prompt?: unknown; updatedAt?: unknown }>;
+}
+
+export function loadGroupPromptByChatId(chatId: string | number): string | undefined {
+  const normalizedChatId = String(chatId).trim();
+  if (!normalizedChatId) {
+    return undefined;
+  }
+
+  const filePath = resolve(resolveMemoryDir(), GROUP_PROMPT_STORE_FILE);
+  let raw: string;
+  try {
+    raw = readFileSync(filePath, "utf8");
+  } catch {
+    return undefined;
+  }
+
+  let parsed: GroupPromptStoreData;
+  try {
+    parsed = JSON.parse(raw) as GroupPromptStoreData;
+  } catch {
+    console.warn(`[system] group prompt store malformed, skipping: ${filePath}`);
+    return undefined;
+  }
+
+  const groups = parsed.groups;
+  if (!groups || typeof groups !== "object") {
+    return undefined;
+  }
+  const record = groups[normalizedChatId];
+  const prompt = typeof record?.prompt === "string" ? record.prompt.trim() : "";
+  if (!prompt) {
+    return undefined;
+  }
+  return prompt;
+}
+
 export function buildSystemPromptInput(params?: {
   sendMessageMode?: SendMessageMode;
   systemFiles?: SystemPromptFile[];
+  groupPrompt?: string;
 }): RenderSystemPromptInput {
   return {
     sendMessageMode: params?.sendMessageMode ?? resolveSendMessageMode(),
     systemFiles: params?.systemFiles ?? loadSystemFilesFromMemory(),
+    groupPrompt: params?.groupPrompt?.trim() || undefined,
   };
 }
 

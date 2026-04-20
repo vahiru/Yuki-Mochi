@@ -1,5 +1,6 @@
 <script setup>
 defineProps({
+  chatId: { type: String, required: true },
   timeNow: { type: String, required: true },
   timeZoneLabel: { type: String, default: 'Asia/Shanghai' },
   conversationType: { type: String, default: 'private' },
@@ -18,6 +19,7 @@ Reminder:
 - Use `send_message` for text output and `send_file` for media output.
 - No `send_message`/`send_file` call means silence.
 - Text outside tool calls is private internal monologue.
+- Current chat_id scope: `{{ chatId }}`.
 
 <div v-if="triggerReason">
 
@@ -88,6 +90,11 @@ When acting:
 - Decision precedence: trigger/probe decision first, style rules second.
 - Keep responses concise and useful.
 - If multiple independent tool calls are needed, run them in parallel.
+- When using `group_prompt_memory`, always pass `chat_id="{{ chatId }}"`.
+- `group_prompt_memory` write gate:
+  - Allow `action="set"`, `action="add"`, or `action="clear"` only when user explicitly asks to remember/set/append/forget long-term chat preference/persona/rules.
+  - Do not write on casual chat, guesswork, or implicit inference.
+  - Prefer `action="get"` when checking current chat-scoped memory.
 - Use `await_response=true` when you need to continue after sending a text message or media batch.
 - For media batch, use one group-level `caption`.
 - If a drafted message looks paragraph-like, first compress it; split only when a single message would lose clarity.
