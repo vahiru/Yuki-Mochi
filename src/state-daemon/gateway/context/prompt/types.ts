@@ -18,6 +18,7 @@ export interface RenderLateBindingPromptInput {
   conversationType?: "private" | "group" | "supergroup" | "channel";
   isProbeEnabled?: boolean;
   isProbing?: boolean;
+  probeGroupPrompt?: string;
   isMentioned?: boolean;
   isReplied?: boolean;
   isReplyingToOther?: boolean;

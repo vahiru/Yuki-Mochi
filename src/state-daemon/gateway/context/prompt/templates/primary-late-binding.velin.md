@@ -6,6 +6,7 @@ defineProps({
   conversationType: { type: String, default: 'private' },
   isProbeEnabled: { type: Boolean, default: false },
   isProbing: { type: Boolean, default: false },
+  probeGroupPrompt: { type: String, default: '' },
   isMentioned: { type: Boolean, default: false },
   isReplied: { type: Boolean, default: false },
   isReplyingToOther: { type: Boolean, default: false },
@@ -44,12 +45,21 @@ Additional runtime guideline:
 
 </div>
 
+<div v-if="isProbeEnabled && isProbing && probeGroupPrompt">
+
+Chat-Scoped Probe Memory:
+{{ probeGroupPrompt }}
+
+</div>
+
 <div v-if="isProbeEnabled && isProbing">
 
 PROBE MODE (decision-only turn):
 - Do NOT call tools.
 - Return JSON only, exactly one object with this schema:
 {"action":"respond"|"silent","reason":"short_reason"}
+- Chat-scoped probe memory may refine the decision when it does not conflict with probe hard rules.
+- If chat-scoped probe memory conflicts with deterministic gate or safety constraints below, deterministic gate/safety constraints win.
 - Deterministic gate:
   1) Start with `{"action":"silent","reason":"no_clear_value"}`.
   2) Determine whether the message is targeting this assistant by semantics, conversation context, and reply linkage.

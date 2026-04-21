@@ -339,6 +339,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
     triggerMessage,
   }) => {
     const sendMessageMode = resolveSendMessageMode();
+    const probeGroupPrompt = loadGroupPromptByChatId(triggerMessage.chatId);
     const messages = await buildContextMessages(triggerMessage, sendMessageMode);
     const targetingSignals = deriveTargetingSignals(triggerMessage);
     const lateBindingPrompt = await renderLateBindingPrompt({
@@ -347,6 +348,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
       conversationType: triggerMessage.conversationType,
       isProbeEnabled: true,
       isProbing: true,
+      probeGroupPrompt,
       isMentioned: triggerMessage.metadata.isMentionMe,
       isReplied: triggerMessage.metadata.isReplyToMe,
       isReplyingToOther: targetingSignals.isReplyingToOther,
