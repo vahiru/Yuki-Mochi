@@ -36,6 +36,8 @@ export async function renderLateBindingPrompt(
       isProbing: input.isProbing ?? false,
       isMentioned: input.isMentioned ?? false,
       isReplied: input.isReplied ?? false,
+      isReplyingToOther: input.isReplyingToOther ?? false,
+      mentionsOtherUsers: input.mentionsOtherUsers ?? false,
       extraGuideline: input.extraGuideline ?? "",
       triggerReason: input.triggerReason ?? "",
     },

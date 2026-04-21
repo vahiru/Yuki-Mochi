@@ -270,6 +270,7 @@ function buildMergedMessage(messages: TelegramMessage[]): TelegramMessage {
       isMentionMe: messages.some((item) => item.metadata.isMentionMe),
       mentions: mergedMentions,
       mentionUserIds: mergedMentionUserIds,
+      isSelf: messages.some((item) => item.metadata.isSelf === true),
       usernameHandle:
         [...messages]
           .reverse()

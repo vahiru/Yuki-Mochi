@@ -748,6 +748,15 @@ async function toTelegramMessage(
   const photoPlaceholder =
     photoCount <= 0 ? "" : photoCount === 1 ? "[photo]" : `[photo x${photoCount}]`;
   const replySnapshot = extractReplySnapshotFromTelegramMessage(message);
+  const mentions = extractMentionsFromTextWithEntities(rawContext, rawEntities);
+  const mentionUserIds = extractMentionUserIds(rawContext, rawEntities);
+  const mentionMe = isMentionMe({
+    text: rawContext,
+    mentions,
+    mentionUserIds,
+    botUsername: ctx.me.username,
+    botUserId: ctx.me.id,
+  });
 
   return {
     userId: message.from?.id?.toString() ?? "unknown",
@@ -758,6 +767,7 @@ async function toTelegramMessage(
     timestamp: (message.date ?? Math.floor(Date.now() / 1000)) * 1000,
     metadata: {
       isBot: message.from?.is_bot ?? false,
+      isSelf: message.from?.id === ctx.me.id,
       username: buildDisplayName(message.from),
       usernameHandle: normalizeUsernameHandle(message.from?.username),
       replyToMessageId: message.reply_to_message?.message_id ?? null,
@@ -765,12 +775,9 @@ async function toTelegramMessage(
       replyToUsername: replySnapshot.replyToUsername,
       replyToPreviewText: replySnapshot.replyToPreviewText,
       isReplyToMe: message.reply_to_message?.from?.id === ctx.me.id,
-      isMentionMe: isMentionMe(ctx),
-      mentions: extractMentions(message),
-      mentionUserIds: extractMentionUserIds(
-        rawContext,
-        rawEntities,
-      ),
+      isMentionMe: mentionMe,
+      mentions,
+      mentionUserIds,
     },
   };
 }
@@ -794,6 +801,15 @@ async function toEditedTelegramMessage(
   const photoCount = (message.photo?.length ?? 0) > 0 ? 1 : 0;
   const photoPlaceholder = photoCount <= 0 ? "" : "[photo]";
   const replySnapshot = extractReplySnapshotFromTelegramMessage(message);
+  const mentions = extractMentionsFromTextWithEntities(rawContext, rawEntities);
+  const mentionUserIds = extractMentionUserIds(rawContext, rawEntities);
+  const mentionMe = isMentionMe({
+    text: rawContext,
+    mentions,
+    mentionUserIds,
+    botUsername: ctx.me.username,
+    botUserId: ctx.me.id,
+  });
 
   return {
     userId: message.from?.id?.toString() ?? "unknown",
@@ -804,6 +820,7 @@ async function toEditedTelegramMessage(
     timestamp: (message.date ?? Math.floor(Date.now() / 1000)) * 1000,
     metadata: {
       isBot: message.from?.is_bot ?? false,
+      isSelf: message.from?.id === ctx.me.id,
       username: buildDisplayName(message.from),
       usernameHandle: normalizeUsernameHandle(message.from?.username),
       replyToMessageId: message.reply_to_message?.message_id ?? null,
@@ -811,12 +828,9 @@ async function toEditedTelegramMessage(
       replyToUsername: replySnapshot.replyToUsername,
       replyToPreviewText: replySnapshot.replyToPreviewText,
       isReplyToMe: message.reply_to_message?.from?.id === ctx.me.id,
-      isMentionMe: isMentionMeEdited(ctx),
-      mentions: extractMentionsFromTextWithEntities(
-        rawContext,
-        rawEntities,
-      ),
-      mentionUserIds: extractMentionUserIds(rawContext, rawEntities),
+      isMentionMe: mentionMe,
+      mentions,
+      mentionUserIds,
     },
   };
 }
@@ -838,6 +852,7 @@ function toOutgoingTelegramMessage(
     timestamp: (message.date ?? Math.floor(Date.now() / 1000)) * 1000,
     metadata: {
       isBot: message.from?.is_bot ?? true,
+      isSelf: true,
       username: buildDisplayName(message.from),
       usernameHandle: normalizeUsernameHandle(message.from?.username),
       replyToMessageId: message.reply_to_message?.message_id ?? null,
@@ -859,6 +874,7 @@ function toEditedResultMessage(
 ): TelegramMessage | null {
   const baseMetadata = {
     isBot: true,
+    isSelf: true,
     replyToMessageId: state.replyToMessageId,
     replyToUserId: state.replyToUserId,
     replyToUsername: state.replyToUserId,
@@ -945,34 +961,29 @@ function toOptionalMessageId(messageId?: number | string): number | undefined {
   throw new Error(`invalid messageId: ${String(messageId)}`);
 }
 
-function isMentionMe(ctx: Context): boolean {
-  const message = ctx.msg;
-  if (!message) {
-    return false;
+function isMentionMe(input: {
+  text: string;
+  mentions: string[];
+  mentionUserIds: string[];
+  botUsername?: string;
+  botUserId?: string | number;
+}): boolean {
+  const normalizedHandle = normalizeUsernameHandle(input.botUsername);
+  const mentionSet = new Set(input.mentions.map((item) => item.toLowerCase()));
+  if (normalizedHandle && mentionSet.has(normalizedHandle)) {
+    return true;
   }
-  const text = message.text ?? message.caption ?? "";
-  return text.includes(`@${ctx.me.username}`);
-}
-
-function isMentionMeEdited(ctx: Context): boolean {
-  const message = ctx.editedMessage;
-  if (!message) {
-    return false;
+  const botUserId = input.botUserId === undefined ? "" : String(input.botUserId).trim();
+  if (botUserId && input.mentionUserIds.some((item) => item.trim() === botUserId)) {
+    return true;
   }
-  const text = message.text ?? message.caption ?? "";
-  return text.includes(`@${ctx.me.username}`);
-}
-
-function extractMentions(message: NonNullable<Context["message"]>): string[] {
-  const textMentions = extractMentionsFromTextWithEntities(
-    message.text ?? "",
-    message.entities
-  );
-  const captionMentions = extractMentionsFromTextWithEntities(
-    message.caption ?? "",
-    message.caption_entities
-  );
-  return Array.from(new Set([...textMentions, ...captionMentions]));
+  if (normalizedHandle) {
+    const lowerText = input.text.toLowerCase();
+    if (lowerText.includes(normalizedHandle)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function extractMentionUserIds(

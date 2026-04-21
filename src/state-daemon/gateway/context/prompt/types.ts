@@ -20,6 +20,8 @@ export interface RenderLateBindingPromptInput {
   isProbing?: boolean;
   isMentioned?: boolean;
   isReplied?: boolean;
+  isReplyingToOther?: boolean;
+  mentionsOtherUsers?: boolean;
   extraGuideline?: string;
   triggerReason?: string;
 }

@@ -476,14 +476,6 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
     const replyToMsgIdRaw =
       msg.replyTo instanceof Api.MessageReplyHeader ? msg.replyTo.replyToMsgId : null;
     const replyToMsgId = typeof replyToMsgIdRaw === "number" ? replyToMsgIdRaw : null;
-    
-    const myUsername = (me.username || "").toLowerCase();
-    const text = (msg.message || "").toLowerCase();
-    
-    // Mention heuristic: always trigger in private chats, or when explicitly @mentioned.
-    const isMentionMe =
-      conversationType === "private" ||
-      (myUsername ? text.includes(`@${myUsername}`) : false);
 
     // Reply detection (cache + network fallback for post-restart historical replies).
     const replyTarget = await resolveReplyTarget(chatId, replyToMsgId);
@@ -519,6 +511,22 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
     }
 
     const rawContext = msg.message || "";
+    const text = rawContext.toLowerCase();
+    const mentionExtraction = extractMentionsFromMessageEntities(rawContext, msg.entities);
+    const myUsername = (me.username || "").toLowerCase();
+    const myUsernameHandle = normalizeUsernameHandle(me.username);
+    const hasTextHandleMention = myUsername ? text.includes(`@${myUsername}`) : false;
+    const hasEntityHandleMention = Boolean(
+      myUsernameHandle && mentionExtraction.mentions.includes(myUsernameHandle),
+    );
+    const hasEntityUserIdMention = mentionExtraction.mentionUserIds.includes(me.id.toString());
+    // Mention heuristic: always trigger in private chats, or when explicitly @mentioned / entity mentioned.
+    const isMentionMe =
+      conversationType === "private" ||
+      hasTextHandleMention ||
+      hasEntityHandleMention ||
+      hasEntityUserIdMention;
+
     const customEmojiOccurrences = extractCustomEmojiOccurrencesFromMessage(
       rawContext,
       msg.entities
@@ -544,7 +552,6 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
       customEmojiOccurrences,
       customEmojiInfoById
     );
-    const mentionExtraction = extractMentionsFromMessageEntities(rawContext, msg.entities);
     rememberMessagePreview(chatId, msg.id, senderName, renderedContext + photoPlaceholder);
 
     console.log(`[userbot] Ingested: from=${userId} (${senderName}) chat=${chatId} text="${text.slice(0, 20)}..." photo=${photoCount} mention=${isMentionMe} reply=${isReplyToMe} replyTo=${replyToMsgId === null ? "-" : replyToMsgId}`);
@@ -556,6 +563,7 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
       imageUrls,
       metadata: {
         isBot,
+        isSelf: false,
         username: senderName,
         usernameHandle: senderUsernameHandle,
         replyToMessageId: replyToMsgId,

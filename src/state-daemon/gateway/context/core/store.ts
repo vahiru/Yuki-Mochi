@@ -982,6 +982,7 @@ function toTelegramMessage(stored: SearchResult["messages"][number]): TelegramMe
     timestamp,
     metadata: {
       isBot: metadata?.isBot ?? false,
+      isSelf: false,
       username: metadata?.username ? metadata.username : null,
       replyToMessageId,
       replyToUserId: metadata?.replyToUserId ? metadata.replyToUserId : null,

@@ -114,6 +114,7 @@ const DEFAULT_SEND_MESSAGE_MODE = "strict";
 const DEFAULT_GROUP_REPLY_SOFT_LIMIT = 400;
 const DEFAULT_PROBE_SILENT_COOLDOWN_MS = 5000;
 const DEFAULT_PROBE_RESPOND_COOLDOWN_MS = 45000;
+const PROBE_GUARD_ALLOWED_REASONS = new Set(["necessary_correction", "safety_warning"]);
 type SendMessageMode = "strict" | "compat";
 
 function resolveSendMessageMode(): SendMessageMode {
@@ -250,6 +251,43 @@ function splitGroupReplyText(text: string, softLimit: number): string[] {
   flushCurrent();
   return chunks.length > 0 ? chunks : [trimmed];
 }
+
+function deriveTargetingSignals(message: TelegramMessage): {
+  isReplyingToOther: boolean;
+  mentionsOtherUsers: boolean;
+  targetedOther: boolean;
+} {
+  const isReplyingToOther =
+    message.metadata.replyToMessageId !== null && message.metadata.isReplyToMe !== true;
+  const mentionCount = (message.metadata.mentions ?? []).length;
+  const mentionUserIdCount = (message.metadata.mentionUserIds ?? []).length;
+  const mentionsOtherUsers =
+    message.metadata.isMentionMe !== true && (mentionCount > 0 || mentionUserIdCount > 0);
+  return {
+    isReplyingToOther,
+    mentionsOtherUsers,
+    targetedOther:
+      message.metadata.isMentionMe !== true &&
+      message.metadata.isReplyToMe !== true &&
+      (isReplyingToOther || mentionsOtherUsers),
+  };
+}
+
+function normalizeProbeReason(reason: string): string {
+  return reason
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+}
+
+function allowProbeByTargetGuard(reason: string): boolean {
+  const normalized = normalizeProbeReason(reason);
+  if (PROBE_GUARD_ALLOWED_REASONS.has(normalized)) {
+    return true;
+  }
+  return normalized.includes("necessary_correction") || normalized.includes("safety_warning");
+}
+
 function estimateReplyEtaSeconds(message: TelegramMessage): { min: number; max: number } {
   let min = 30;
   let max = 90;
@@ -347,6 +385,7 @@ export function createMessageGateway(
     const isOwner = role === "owner";
 
     if (decision.reason === "probe_gate") {
+      const targetingSignals = deriveTargetingSignals(message);
       if (!probeEnabled) {
         return;
       }
@@ -373,13 +412,23 @@ export function createMessageGateway(
         const finishedAt = Date.now();
         const latencyMs = finishedAt - startedAt;
         lastProbeAtByChat.set(message.chatId, finishedAt);
-        if (probeResult.shouldReply) {
+        let shouldReply = probeResult.shouldReply;
+        let guardDecision = "pass";
+        if (
+          shouldReply &&
+          targetingSignals.targetedOther &&
+          !allowProbeByTargetGuard(probeResult.reason)
+        ) {
+          shouldReply = false;
+          guardDecision = "force_silent_targeted_other";
+        }
+        if (shouldReply) {
           lastProbeRespondAtByChat.set(message.chatId, finishedAt);
         }
         console.log(
-          `[probe] chat=${message.chatId} messageId=${message.messageId} cooldown_hit=none shouldReply=${probeResult.shouldReply} reason=${probeResult.reason} latency_ms=${latencyMs}`
+          `[probe] chat=${message.chatId} messageId=${message.messageId} cooldown_hit=none shouldReply=${shouldReply} reason=${probeResult.reason} reply_to_other=${targetingSignals.isReplyingToOther} mentions_other=${targetingSignals.mentionsOtherUsers} targeted_other=${targetingSignals.targetedOther} guard=${guardDecision} latency_ms=${latencyMs}`
         );
-        if (!probeResult.shouldReply) {
+        if (!shouldReply) {
           return;
         }
       } catch (error) {

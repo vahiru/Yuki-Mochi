@@ -19,6 +19,7 @@ export interface TelegramMessage {
   imageUrls?: string[];
   metadata: {
     isBot: boolean;
+    isSelf?: boolean;
     username: string | null;
     replyToMessageId: number | null;
     replyToUserId: string | null;

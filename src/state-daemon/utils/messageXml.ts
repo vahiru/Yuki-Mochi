@@ -18,7 +18,7 @@ export function formatNormalMessageNode(message: TelegramMessage, replyToMessage
       `unavailable (reply_to=${message.metadata.replyToMessageId})`;
     replyToPreview = `<reply_to_preview speaker="${escapeXml(fallbackSpeaker)}">${escapeXml(fallbackText)}</reply_to_preview>`;
   }
-  if (message.metadata.isBot) {
+  if (message.metadata.isSelf === true) {
     return `<agent_message ${messageTemplate}>
     ${replyToPreview ? `${replyToPreview}` : ""}
     ${escapeXml(message.context)}

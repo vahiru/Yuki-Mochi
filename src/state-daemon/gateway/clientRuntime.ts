@@ -169,6 +169,24 @@ function parseReplyToMessageId(input: string | undefined): number | undefined {
   return parsed;
 }
 
+interface TargetingSignals {
+  isReplyingToOther: boolean;
+  mentionsOtherUsers: boolean;
+}
+
+function deriveTargetingSignals(message: TelegramMessage): TargetingSignals {
+  const isReplyingToOther =
+    message.metadata.replyToMessageId !== null && message.metadata.isReplyToMe !== true;
+  const mentionCount = (message.metadata.mentions ?? []).length;
+  const mentionUserIdCount = (message.metadata.mentionUserIds ?? []).length;
+  const mentionsOtherUsers =
+    message.metadata.isMentionMe !== true && (mentionCount > 0 || mentionUserIdCount > 0);
+  return {
+    isReplyingToOther,
+    mentionsOtherUsers,
+  };
+}
+
 function toLocalPrompt(messages: LLMMessage[]): string {
   return messages
     .map((message) => `[${message.role.toUpperCase()}]\n${message.content}`)
@@ -322,6 +340,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
   }) => {
     const sendMessageMode = resolveSendMessageMode();
     const messages = await buildContextMessages(triggerMessage, sendMessageMode);
+    const targetingSignals = deriveTargetingSignals(triggerMessage);
     const lateBindingPrompt = await renderLateBindingPrompt({
       chatId: String(triggerMessage.chatId),
       timeNow: formatTimeNow(),
@@ -330,6 +349,8 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
       isProbing: true,
       isMentioned: triggerMessage.metadata.isMentionMe,
       isReplied: triggerMessage.metadata.isReplyToMe,
+      isReplyingToOther: targetingSignals.isReplyingToOther,
+      mentionsOtherUsers: targetingSignals.mentionsOtherUsers,
       triggerReason: "probe_gate",
     });
 
@@ -362,6 +383,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
 
         const llmMessages = await buildContextMessages(triggerMessage, sendMessageMode);
         const normalizedPrompt = prompt.trim();
+        const targetingSignals = deriveTargetingSignals(triggerMessage);
         const lateBindingPrompt = await renderLateBindingPrompt({
           chatId: String(triggerMessage.chatId),
           timeNow: formatTimeNow(),
@@ -370,6 +392,8 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
           isProbing: false,
           isMentioned: triggerMessage.metadata.isMentionMe,
           isReplied: triggerMessage.metadata.isReplyToMe,
+          isReplyingToOther: targetingSignals.isReplyingToOther,
+          mentionsOtherUsers: targetingSignals.mentionsOtherUsers,
           extraGuideline: normalizedPrompt || undefined,
           triggerReason,
         });
