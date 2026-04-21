@@ -236,6 +236,7 @@ export function createGroupPromptMemoryStore(memoryFilesRoot = resolveMemoryFile
 
 export function createGroupPromptMemoryTool(memoryFilesRoot?: string): AgentTool<any, GroupPromptToolDetails> {
   const store = createGroupPromptMemoryStore(memoryFilesRoot);
+  const storePath = store.getStorePath();
 
   return {
     name: "group_prompt_memory",
@@ -261,6 +262,9 @@ export function createGroupPromptMemoryTool(memoryFilesRoot?: string): AgentTool
 
       if (action === "get") {
         const record = await store.get(chatId);
+        console.log(
+          `[group_prompt_memory] action=get chat=${chatId} path=${storePath} found=${Boolean(record)}`
+        );
         return {
           content: [{ type: "text", text: record ? "Group prompt found." : "Group prompt is empty." }],
           details: {
@@ -276,6 +280,9 @@ export function createGroupPromptMemoryTool(memoryFilesRoot?: string): AgentTool
       if (action === "set") {
         const prompt = normalizePrompt(params.content);
         const next = await store.set(chatId, prompt);
+        console.log(
+          `[group_prompt_memory] action=set chat=${chatId} path=${storePath} chars=${next.prompt.length}`
+        );
         return {
           content: [{ type: "text", text: "Group prompt saved." }],
           details: {
@@ -291,6 +298,9 @@ export function createGroupPromptMemoryTool(memoryFilesRoot?: string): AgentTool
       if (action === "add") {
         const promptChunk = normalizePrompt(params.content);
         const next = await store.add(chatId, promptChunk);
+        console.log(
+          `[group_prompt_memory] action=add chat=${chatId} path=${storePath} chars=${next.prompt.length}`
+        );
         return {
           content: [{ type: "text", text: "Group prompt appended." }],
           details: {
@@ -304,6 +314,9 @@ export function createGroupPromptMemoryTool(memoryFilesRoot?: string): AgentTool
       }
 
       const existed = await store.clear(chatId);
+      console.log(
+        `[group_prompt_memory] action=clear chat=${chatId} path=${storePath} existed=${existed}`
+      );
       return {
         content: [{ type: "text", text: existed ? "Group prompt cleared." : "Group prompt was already empty." }],
         details: {

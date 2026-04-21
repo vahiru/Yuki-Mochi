@@ -33,15 +33,22 @@ if (!API_KEY) {
   throw new Error("API_KEY (or QWEN_API_KEY) is required to start enclave server.");
 }
 
-process.env.API_KEY ??= API_KEY;
-process.env.BASE_URL ??= baseURL;
-process.env.MODEL ??= model;
-process.env.RUNTIME_ROOT ??= config.runtime.runtimeRoot;
-process.env.PROTO_ROOT ??= config.runtime.protoRoot;
-process.env.MEMORY_FILES_ROOT ??= config.runtime.memoryFilesRoot;
-process.env.EVOLUTIONS_ROOT ??= config.runtime.evolutionsRoot;
-process.env.READ_FILE_SAFE_ROOT ??= WORKSPACE_ROOT;
-process.env.ENABLED_TOOLS ??= config.tools.enabled;
+function setEnvIfBlank(name: string, value: string): void {
+  if (!process.env[name]?.trim()) {
+    process.env[name] = value;
+  }
+}
+
+setEnvIfBlank("API_KEY", API_KEY);
+setEnvIfBlank("BASE_URL", baseURL);
+setEnvIfBlank("MODEL", model);
+setEnvIfBlank("RUNTIME_ROOT", config.runtime.runtimeRoot);
+setEnvIfBlank("PROTO_ROOT", config.runtime.protoRoot);
+setEnvIfBlank("MEMORY_FILES_ROOT", config.runtime.memoryFilesRoot);
+setEnvIfBlank("EVOLUTIONS_ROOT", config.runtime.evolutionsRoot);
+setEnvIfBlank("READ_FILE_SAFE_ROOT", WORKSPACE_ROOT);
+setEnvIfBlank("ENABLED_TOOLS", config.tools.enabled);
+console.log(`[enclave] MEMORY_FILES_ROOT=${process.env.MEMORY_FILES_ROOT}`);
 
 // const { createOpenAIEnclaveRuntime } = await import("./agent/core/openai");
 // const {

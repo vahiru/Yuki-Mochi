@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { RenderSystemPromptInput, SendMessageMode, SystemPromptFile } from "./types";
 
 const CURRENT_DIR = dirname(fileURLToPath(import.meta.url));
-const SHARED_MEMORY_DIR = resolve(CURRENT_DIR, "../../../../.runtime/memory_files");
+const SHARED_MEMORY_DIR = resolve(CURRENT_DIR, "../../../../../.runtime/memory_files");
 const DEFAULT_SEND_MESSAGE_MODE: SendMessageMode = "strict";
 export const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 const GROUP_PROMPT_STORE_FILE = "group-prompts.json";

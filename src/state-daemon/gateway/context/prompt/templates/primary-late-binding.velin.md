@@ -117,6 +117,7 @@ When acting:
 - Keep responses concise and useful.
 - If multiple independent tool calls are needed, run them in parallel.
 - When using `group_prompt_memory`, always pass `chat_id="{{ chatId }}"`.
+- If user explicitly asks to remember/store/append/forget chat-scoped preferences or rules, you MUST call `group_prompt_memory` (`set`/`add`/`clear`) before sending confirmation.
 - `group_prompt_memory` write gate:
   - Allow `action="set"`, `action="add"`, or `action="clear"` only when user explicitly asks to remember/set/append/forget long-term chat preference/persona/rules.
   - Do not write on casual chat, guesswork, or implicit inference.
