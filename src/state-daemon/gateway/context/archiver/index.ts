@@ -12,6 +12,14 @@ interface ArchivePatch {
   content: Record<string, unknown>;
 }
 
+type ExtendedMessageMetadata = MessageMetadata & {
+  replyToUsername?: string;
+  replyToPreviewText?: string;
+  mentionUserIds?: string[];
+  usernameHandle?: string;
+  senderEntityType?: TelegramMessage["metadata"]["senderEntityType"];
+};
+
 export interface BackgroundArchiveSession {
   sessionId: string;
   chatId: number;
@@ -72,6 +80,20 @@ export function createArchiverService(options: CreateArchiverServiceOptions = {}
 }
 
 function toVfsChatMessage(message: TelegramMessage, vector: number[]): ChatMessage {
+  const metadata: ExtendedMessageMetadata = {
+    isBot: message.metadata.isBot,
+    username: message.metadata.username ?? "",
+    replyToMessageId: String(message.metadata.replyToMessageId ?? ""),
+    replyToUserId: message.metadata.replyToUserId ?? "",
+    replyToUsername: message.metadata.replyToUsername ?? "",
+    replyToPreviewText: message.metadata.replyToPreviewText ?? "",
+    isReplyToMe: message.metadata.isReplyToMe,
+    isMentionMe: message.metadata.isMentionMe,
+    mentions: message.metadata.mentions,
+    mentionUserIds: message.metadata.mentionUserIds ?? [],
+    usernameHandle: message.metadata.usernameHandle ?? "",
+    senderEntityType: message.metadata.senderEntityType ?? "unknown",
+  };
   return {
     userId: message.userId,
     messageId: String(message.messageId),
@@ -79,17 +101,7 @@ function toVfsChatMessage(message: TelegramMessage, vector: number[]): ChatMessa
     conversationType: message.conversationType,
     context: message.context,
     timestamp: message.timestamp,
-    metadata: {
-      isBot: message.metadata.isBot,
-      username: message.metadata.username ?? "",
-      replyToMessageId: String(message.metadata.replyToMessageId ?? ""),
-      replyToUserId: message.metadata.replyToUserId ?? "",
-      replyToUsername: message.metadata.replyToUsername ?? "",
-      replyToPreviewText: message.metadata.replyToPreviewText ?? "",
-      isReplyToMe: message.metadata.isReplyToMe,
-      isMentionMe: message.metadata.isMentionMe,
-      mentions: message.metadata.mentions,
-    } as MessageMetadata,
+    metadata: metadata as MessageMetadata,
     vector: vector.slice(),
   };
 }

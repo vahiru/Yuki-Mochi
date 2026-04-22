@@ -9,6 +9,7 @@ import type {
   TelegramOutgoingMediaItem,
   TelegramSendMediaBatchResult,
 } from "./types";
+import type { TelegramSenderEntityType } from "../types/message";
 import fs from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { createCustomEmojiToTextResolver } from "./custom-emoji-to-text";
@@ -251,7 +252,7 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
     userId: string | null | undefined,
   ): void => {
     const normalized = (userId ?? "").trim();
-    if (!Number.isFinite(chatId) || !Number.isFinite(messageId) || !normalized || normalized === "unknown") {
+    if (!Number.isFinite(chatId) || !Number.isFinite(messageId) || !normalized) {
       return;
     }
     let bucket = messageAuthorByChat.get(chatId);
@@ -295,9 +296,10 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
 
   const rememberOutgoingMessage = (chatId: number, message: Api.Message): void => {
     rememberSentMessage(chatId, message.id);
+    const senderIdentity = resolveSenderIdentityFromPeer(message.fromId);
     const fromUserId =
-      message.fromId instanceof Api.PeerUser
-        ? message.fromId.userId.toString()
+      senderIdentity.userId !== "unknown"
+        ? senderIdentity.userId
         : me?.id?.toString() ?? null;
     rememberMessageAuthor(chatId, message.id, fromUserId);
     const senderName = me ? buildDisplayNameFromUser(me) : null;
@@ -325,6 +327,33 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
       return buildDisplayNameFromUser(entity);
     }
     return entity.title?.trim() || null;
+  };
+
+  const resolveSenderIdentityFromPeer = (
+    peer: Api.TypePeer | undefined | null,
+  ): { userId: string; senderEntityType: TelegramSenderEntityType } => {
+    if (peer instanceof Api.PeerUser) {
+      return {
+        userId: peer.userId.toString(),
+        senderEntityType: "user",
+      };
+    }
+    if (peer instanceof Api.PeerChat) {
+      return {
+        userId: `chat:${peer.chatId.toString()}`,
+        senderEntityType: "chat",
+      };
+    }
+    if (peer instanceof Api.PeerChannel) {
+      return {
+        userId: `channel:${peer.channelId.toString()}`,
+        senderEntityType: "channel",
+      };
+    }
+    return {
+      userId: "unknown",
+      senderEntityType: "unknown",
+    };
   };
 
   const downloadPhoto = async (msg: Api.Message): Promise<string | null> => {
@@ -420,16 +449,23 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
 
       if (repliedMessage instanceof Api.Message) {
         const repliedFromId = repliedMessage.fromId;
-        if (repliedFromId instanceof Api.PeerUser) {
-          const replyToUserId = repliedFromId.userId.toString();
+        const replyIdentity = resolveSenderIdentityFromPeer(repliedFromId);
+        if (replyIdentity.userId !== "unknown") {
+          const replyToUserId = replyIdentity.userId;
           let replyToUsername: string | null = replyToUserId;
-          try {
-            const entity = await client.getEntity(repliedFromId);
-            if (entity instanceof Api.User) {
-              replyToUsername = buildDisplayNameFromEntity(entity) ?? replyToUserId;
+          if (repliedFromId) {
+            try {
+              const entity = await client.getEntity(repliedFromId);
+              if (
+                entity instanceof Api.User ||
+                entity instanceof Api.Chat ||
+                entity instanceof Api.Channel
+              ) {
+                replyToUsername = buildDisplayNameFromEntity(entity) ?? replyToUserId;
+              }
+            } catch {
+              // Keep stable id fallback.
             }
-          } catch {
-            // Keep userId fallback.
           }
           const replyToPreviewText = extractReplyPreviewFromApiMessage(repliedMessage);
           rememberMessageAuthor(chatId, replyToMsgId, replyToUserId);
@@ -463,14 +499,16 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
   const toTelegramMessage = async (msg: Api.Message, photoCountOverride?: number, photoPaths?: string[]): Promise<TelegramMessage | null> => {
     if (!me || !msg.peerId) return null;
     const fromId = msg.fromId;
-    const userId = fromId instanceof Api.PeerUser ? fromId.userId.toString() : "unknown";
+    const senderIdentity = resolveSenderIdentityFromPeer(fromId);
+    const userId = senderIdentity.userId;
+    const senderEntityType = senderIdentity.senderEntityType;
 
     const chatId = msg.peerId instanceof Api.PeerUser ? msg.peerId.userId.toJSNumber() :
                    (msg.peerId instanceof Api.PeerChat ? msg.peerId.chatId.toJSNumber() :
                    (msg.peerId instanceof Api.PeerChannel ? msg.peerId.channelId.toJSNumber() : 0));
     rememberMessageAuthor(chatId, msg.id, userId);
 
-    if (userId === me.id.toString()) return null;
+    if (senderEntityType === "user" && userId === me.id.toString()) return null;
 
     const conversationType = msg.peerId instanceof Api.PeerUser ? "private" : "group";
     const replyToMsgIdRaw =
@@ -566,6 +604,7 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
         isSelf: false,
         username: senderName,
         usernameHandle: senderUsernameHandle,
+        senderEntityType,
         replyToMessageId: replyToMsgId,
         replyToUserId: replyTarget.replyToUserId,
         replyToUsername: replyTarget.replyToUsername,

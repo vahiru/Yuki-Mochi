@@ -9,6 +9,12 @@ export type TelegramConversationType =
   | "supergroup"
   | "channel";
 
+export type TelegramSenderEntityType =
+  | "user"
+  | "chat"
+  | "channel"
+  | "unknown";
+
 export interface TelegramMessage {
   userId: string;
   messageId: number;
@@ -30,5 +36,6 @@ export interface TelegramMessage {
     mentions: string[];
     mentionUserIds?: string[];
     usernameHandle?: string | null;
+    senderEntityType?: TelegramSenderEntityType;
   };
 }

@@ -53,6 +53,7 @@ const USERNAME_ALIAS_TTL_MS = 12 * 60 * 60 * 1000;
 const TARGET_SPEAKER_SEMANTIC_THRESHOLD = 0.66;
 const SELF_SPEAKER_SEMANTIC_THRESHOLD = 0.68;
 const GROUP_SEMANTIC_THRESHOLD = 0.74;
+const GROUP_RECALL_MIN_TEXT_LENGTH = 20;
 const RECALL_RESULT_LIMIT = 6;
 
 export function createInMemoryContextStore(
@@ -129,38 +130,8 @@ export function createInMemoryContextStore(
         shouldUpdateCenter = !isShortMessage;
         setSessionActive(ccb, targetSession.sessionId);
       } else {
-        const best = pickBestSession(
-          ccb,
-          vector,
-          now,
-          gammaTime,
-          lambda,
-          message.context.length <= MEDIUM_MESSAGE_LENGTH,
-          isShortMessage,
-          similarityThreshold,
-          shortMessageThreshold
-        );
-        if (best && best.session) {
-          targetSession = best.session;
-        }
-        // const start = performance.now();
-        if (best.score >= IMPOSSIBLE_SIMILARITY_SCORE_THRESHOLD) {
-          targetSession = await tryAssignSessionByDecider({
-            targetSession,
-            ccb,
-            message,
-            localModel,
-            cloudModel,
-            sessionDecider,
-          });
-        }
-        // const elapsed = performance.now() - start;
-        // console.log("tryAssignSessionByDecider", elapsed, "ms", ccb.sessionControlBlocks.size, "sessions");
-      }
-
-      if (!targetSession) {
-        try {
-          if (message.metadata.replyToMessageId !== null) {
+        if (message.metadata.replyToMessageId !== null) {
+          try {
             const searchExactResult = await contextSearcher.searchByMessageId({
               chatId,
               messageId: message.metadata.replyToMessageId,
@@ -169,67 +140,112 @@ export function createInMemoryContextStore(
               const recalledSession = recallSession(ccb, searchExactResult, now);
               if (recalledSession) {
                 targetSession = recalledSession;
+                setSessionActive(ccb, targetSession.sessionId);
               }
             }
+          } catch (error) {
+            console.error("context exact reply recall failed", error);
           }
-          if (!targetSession) {
-            const semanticResolution = resolveRecallTargetSpeakerIds(ccb, message, now);
-            const targetScopedResults = filterSearchResultsByScore(
+        }
+        if (!targetSession) {
+          const best = pickBestSession(
+            ccb,
+            vector,
+            now,
+            gammaTime,
+            lambda,
+            message.context.length <= MEDIUM_MESSAGE_LENGTH,
+            isShortMessage,
+            similarityThreshold,
+            shortMessageThreshold
+          );
+          if (best && best.session) {
+            targetSession = best.session;
+          }
+          // const start = performance.now();
+          if (best.score >= IMPOSSIBLE_SIMILARITY_SCORE_THRESHOLD) {
+            targetSession = await tryAssignSessionByDecider({
+              targetSession,
+              ccb,
+              message,
+              localModel,
+              cloudModel,
+              sessionDecider,
+            });
+          }
+        }
+        // const elapsed = performance.now() - start;
+        // console.log("tryAssignSessionByDecider", elapsed, "ms", ccb.sessionControlBlocks.size, "sessions");
+      }
+
+      if (!targetSession) {
+        try {
+          const explicitTargetSpeakerIds = collectExplicitRecallSpeakerIds(ccb, message, now);
+          const semanticResolution = resolveRecallTargetSpeakerIds(
+            ccb,
+            message,
+            now,
+            explicitTargetSpeakerIds,
+          );
+          const targetScopedResults = filterSearchResultsByScore(
+            await contextSearcher.searchSemantic({
+              chatId,
+              query: message.context,
+              limit: RECALL_RESULT_LIMIT,
+              targetSpeakerIds: semanticResolution.targetSpeakerIds,
+            }),
+            TARGET_SPEAKER_SEMANTIC_THRESHOLD,
+          );
+
+          let semanticResults = targetScopedResults;
+          let recallStage: "target" | "self" | "group" | "none" = semanticResults.length > 0 ? "target" : "none";
+
+          if (semanticResults.length === 0 && !semanticResolution.targetSpeakerIds.includes(message.userId)) {
+            const selfScopedResults = filterSearchResultsByScore(
               await contextSearcher.searchSemantic({
                 chatId,
                 query: message.context,
                 limit: RECALL_RESULT_LIMIT,
-                targetSpeakerIds: semanticResolution.targetSpeakerIds,
+                targetSpeakerIds: [message.userId],
               }),
-              TARGET_SPEAKER_SEMANTIC_THRESHOLD,
+              SELF_SPEAKER_SEMANTIC_THRESHOLD,
             );
-
-            let semanticResults = targetScopedResults;
-            let recallStage: "target" | "self" | "group" | "none" = semanticResults.length > 0 ? "target" : "none";
-
-            if (semanticResults.length === 0 && !semanticResolution.targetSpeakerIds.includes(message.userId)) {
-              const selfScopedResults = filterSearchResultsByScore(
-                await contextSearcher.searchSemantic({
-                  chatId,
-                  query: message.context,
-                  limit: RECALL_RESULT_LIMIT,
-                  targetSpeakerIds: [message.userId],
-                }),
-                SELF_SPEAKER_SEMANTIC_THRESHOLD,
-              );
-              if (selfScopedResults.length > 0) {
-                semanticResults = selfScopedResults;
-                recallStage = "self";
-              }
+            if (selfScopedResults.length > 0) {
+              semanticResults = selfScopedResults;
+              recallStage = "self";
             }
+          }
 
-            if (semanticResults.length === 0) {
-              const groupScopedResults = filterSearchResultsByScore(
-                await contextSearcher.searchSemantic({
-                  chatId,
-                  query: message.context,
-                  limit: RECALL_RESULT_LIMIT,
-                }),
-                GROUP_SEMANTIC_THRESHOLD,
-              );
-              if (groupScopedResults.length > 0) {
-                semanticResults = groupScopedResults;
-                recallStage = "group";
-              }
+          if (
+            semanticResults.length === 0 &&
+            shouldAllowGroupWideSemanticRecall(message, semanticResolution.reason, explicitTargetSpeakerIds)
+          ) {
+            const groupScopedResults = filterSearchResultsByScore(
+              await contextSearcher.searchSemantic({
+                chatId,
+                query: message.context,
+                limit: RECALL_RESULT_LIMIT,
+              }),
+              GROUP_SEMANTIC_THRESHOLD,
+            );
+            if (groupScopedResults.length > 0) {
+              semanticResults = groupScopedResults;
+              recallStage = "group";
             }
+          }
 
-            if (recallDebugEnabled) {
-              console.log(
-                `[recall] chat=${chatId} messageId=${message.messageId} reason=${semanticResolution.reason} targets=${semanticResolution.targetSpeakerIds.join(",") || "-"} stage=${recallStage} count=${semanticResults.length} topScore=${semanticResults[0]?.score ?? 0}`,
-              );
-            }
+          if (recallDebugEnabled) {
+            console.log(
+              `[recall] chat=${chatId} messageId=${message.messageId} reason=${semanticResolution.reason} targets=${semanticResolution.targetSpeakerIds.join(",") || "-"} stage=${recallStage} count=${semanticResults.length} topScore=${semanticResults[0]?.score ?? 0}`,
+            );
+          }
 
-            const mostSimilarResult = semanticResults[0];
-            if (mostSimilarResult) {
-              const recalledSession = recallSession(ccb, mostSimilarResult, now);
-              if (recalledSession) {
-                targetSession = recalledSession;
-              }
+          const mostSimilarResult = semanticResults[0];
+          if (mostSimilarResult) {
+            const recalledSession = recallSession(ccb, mostSimilarResult, now);
+            if (recalledSession) {
+              targetSession = recalledSession;
+              setSessionActive(ccb, targetSession.sessionId);
             }
           }
         } catch (error) {
@@ -529,8 +545,8 @@ function resolveRecallTargetSpeakerIds(
   ccb: ChatControlBlock,
   message: TelegramMessage,
   now: number,
+  explicitTargets = collectExplicitRecallSpeakerIds(ccb, message, now),
 ): { targetSpeakerIds: string[]; reason: "explicit" | "pronoun" | "self" } {
-  const explicitTargets = collectExplicitRecallSpeakerIds(ccb, message, now);
   if (explicitTargets.length > 0) {
     return {
       targetSpeakerIds: explicitTargets,
@@ -550,6 +566,23 @@ function resolveRecallTargetSpeakerIds(
     targetSpeakerIds: [message.userId],
     reason: "self",
   };
+}
+
+function shouldAllowGroupWideSemanticRecall(
+  message: TelegramMessage,
+  recallReason: "explicit" | "pronoun" | "self",
+  explicitTargetSpeakerIds: string[],
+): boolean {
+  if (message.metadata.replyToMessageId !== null) {
+    return false;
+  }
+  if (explicitTargetSpeakerIds.length > 0) {
+    return false;
+  }
+  if (recallReason !== "self") {
+    return false;
+  }
+  return message.context.trim().length >= GROUP_RECALL_MIN_TEXT_LENGTH;
 }
 
 function filterSearchResultsByScore(results: SearchResult[], minScore: number): SearchResult[] {
@@ -967,6 +1000,7 @@ function toTelegramMessage(stored: SearchResult["messages"][number]): TelegramMe
         usernameHandle?: string;
         replyToUsername?: string;
         replyToPreviewText?: string;
+        senderEntityType?: TelegramMessage["metadata"]["senderEntityType"];
       })
     | undefined;
   const replyToMessageIdRaw = metadata?.replyToMessageId ?? "";
@@ -992,6 +1026,7 @@ function toTelegramMessage(stored: SearchResult["messages"][number]): TelegramMe
       mentions: metadata?.mentions ?? [],
       mentionUserIds: metadataExt?.mentionUserIds ?? [],
       usernameHandle: metadataExt?.usernameHandle ?? null,
+      senderEntityType: metadataExt?.senderEntityType ?? "unknown",
     },
   };
 }

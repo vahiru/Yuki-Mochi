@@ -212,6 +212,9 @@ function findPendingBucketKeyBySourceId(
 }
 
 function isMergeCandidate(message: TelegramMessage): boolean {
+  if (message.userId === "unknown" || message.metadata.senderEntityType === "unknown") {
+    return false;
+  }
   if (message.metadata.replyToMessageId) {
     return false;
   }
@@ -228,6 +231,9 @@ function canMerge(
   mergeWindowMs: number
 ): boolean {
   if (previous.chatId !== current.chatId || previous.userId !== current.userId) {
+    return false;
+  }
+  if ((previous.metadata.senderEntityType ?? "unknown") !== (current.metadata.senderEntityType ?? "unknown")) {
     return false;
   }
   if (!isMergeCandidate(previous) || !isMergeCandidate(current)) {
@@ -276,6 +282,11 @@ function buildMergedMessage(messages: TelegramMessage[]): TelegramMessage {
           .reverse()
           .map((item) => item.metadata.usernameHandle)
           .find((item) => Boolean(item)) ?? null,
+      senderEntityType:
+        [...messages]
+          .reverse()
+          .map((item) => item.metadata.senderEntityType)
+          .find((item) => Boolean(item)) ?? last.metadata.senderEntityType,
     },
   };
 }

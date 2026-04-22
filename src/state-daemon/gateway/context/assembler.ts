@@ -1,4 +1,13 @@
-import { escapeXml, formatNormalMessageNode, formatTimestampUtc8, getSpeaker } from "../../utils/messageXml";
+import {
+  escapeXml,
+  formatFallbackReplyToPreviewNode,
+  formatNormalMessageNode,
+  formatReplyToPreviewNode,
+  formatTimestampUtc8,
+  getSenderHandle,
+  getSenderId,
+  getSpeaker,
+} from "../../utils/messageXml";
 import type { ContextAssembler } from "./core/types";
 import type { TelegramMessage } from "../../types/message";
 
@@ -36,6 +45,10 @@ export function createContextAssembler(): ContextAssembler {
       const currentReplyToAttribute = triggerMessage.metadata.replyToMessageId
         ? ` reply_to="${triggerMessage.metadata.replyToMessageId}"`
         : "";
+      const currentSenderHandle = getSenderHandle(triggerMessage);
+      const currentSenderHandleAttribute = currentSenderHandle
+        ? ` sender_handle="${escapeXml(currentSenderHandle)}"`
+        : "";
 
       const xml = `<context>
   <recent_messages>
@@ -47,7 +60,7 @@ ${normalizedContext.map((message) => formatNormalMessageNode(message,
   findReplyTarget(message.metadata.replyToMessageId))).join("\n")}
   </related_history>
 </context>
-<current_message id="${triggerMessage.messageId}" speaker="${escapeXml(getSpeaker(triggerMessage))}" timestamp="${formatTimestampUtc8(triggerMessage.timestamp)}"${currentReplyToAttribute}>
+<current_message id="${triggerMessage.messageId}" sender_id="${escapeXml(getSenderId(triggerMessage))}" speaker="${escapeXml(getSpeaker(triggerMessage))}"${currentSenderHandleAttribute} timestamp="${formatTimestampUtc8(triggerMessage.timestamp)}"${currentReplyToAttribute}>
   ${currentReplyPreview}
   ${escapeXml(triggerMessage.context)}
 </current_message>`;
@@ -65,17 +78,10 @@ function buildReplyPreviewNode(
   replyToMessage?: TelegramMessage
 ): string {
   if (replyToMessage) {
-    return `<reply_to_preview speaker="${escapeXml(getSpeaker(replyToMessage))}">${escapeXml(replyToMessage.context)}</reply_to_preview>`;
+    return formatReplyToPreviewNode(replyToMessage);
   }
   if (message.metadata.replyToMessageId) {
-    const fallbackSpeaker =
-      (message.metadata.replyToUsername ?? "").trim() ||
-      (message.metadata.replyToUserId ?? "").trim() ||
-      "unknown";
-    const fallbackText =
-      (message.metadata.replyToPreviewText ?? "").trim() ||
-      `unavailable (reply_to=${message.metadata.replyToMessageId})`;
-    return `<reply_to_preview speaker="${escapeXml(fallbackSpeaker)}">${escapeXml(fallbackText)}</reply_to_preview>`;
+    return formatFallbackReplyToPreviewNode(message);
   }
   return "";
 }

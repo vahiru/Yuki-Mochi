@@ -7,6 +7,7 @@ import type {
   TelegramOutgoingMediaItem,
   TelegramSendMediaBatchResult,
 } from "./types";
+import type { TelegramSenderEntityType } from "../types/message";
 import { markdownToTelegramHtml } from "./markdownToHtml";
 import { createCustomEmojiToTextResolver } from "./custom-emoji-to-text";
 import { createImageAltTextStore } from "./image-to-text-store";
@@ -58,8 +59,30 @@ type TelegramIncomingMessageLike = {
       first_name?: string;
       last_name?: string;
       username?: string;
+      is_bot?: boolean;
+    };
+    sender_chat?: {
+      id?: number | string;
+      title?: string;
+      username?: string;
+      first_name?: string;
     };
   };
+};
+
+type TelegramSenderLike = {
+  id?: number | string;
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+  is_bot?: boolean;
+};
+
+type TelegramSenderChatLike = {
+  id?: number | string;
+  title?: string;
+  username?: string;
+  first_name?: string;
 };
 
 interface CustomEmojiOccurrence {
@@ -209,7 +232,7 @@ export function createTelegramAdapter(
     userId: string | null | undefined
   ): void => {
     const normalized = (userId ?? "").trim();
-    if (!Number.isFinite(chatId) || !Number.isFinite(messageId) || !normalized || normalized === "unknown" || normalized === "bot") {
+    if (!Number.isFinite(chatId) || !Number.isFinite(messageId) || !normalized || normalized === "unknown") {
       return;
     }
     let bucket = messageAuthorByChat.get(chatId);
@@ -399,7 +422,7 @@ export function createTelegramAdapter(
 
   const reply: TelegramAdapter["reply"] = async (chatId, text, messageId) => {
     const sent = await sendMessage(chatId, text, messageId);
-    const outgoing = toOutgoingTelegramMessage(sent);
+    const outgoing = toOutgoingTelegramMessage(sent, botUserId);
     if (outgoing) {
       dispatchMessage(outgoing);
     }
@@ -460,7 +483,7 @@ export function createTelegramAdapter(
             caption: effectiveCaption,
             replyToMessageId,
           });
-          const outgoing = toOutgoingTelegramMessage(sent as any);
+          const outgoing = toOutgoingTelegramMessage(sent as any, botUserId);
           if (outgoing) {
             dispatchMessage(outgoing);
           }
@@ -581,7 +604,7 @@ export function createTelegramAdapter(
         finalText,
         state.replyToMessageId ?? undefined
       );
-      const outgoing = toOutgoingTelegramMessage(sent);
+      const outgoing = toOutgoingTelegramMessage(sent, botUserId);
       if (outgoing) {
         dispatchMessage(outgoing);
       }
@@ -757,21 +780,27 @@ async function toTelegramMessage(
     botUsername: ctx.me.username,
     botUserId: ctx.me.id,
   });
+  const senderChat = (message as TelegramIncomingMessageLike & { sender_chat?: TelegramSenderChatLike }).sender_chat;
+  const senderIdentity = resolveBotApiSenderIdentity({
+    sender: message.from,
+    senderChat,
+  });
 
   return {
-    userId: message.from?.id?.toString() ?? "unknown",
+    userId: senderIdentity.userId,
     messageId: message.message_id,
     chatId: chat.id,
     conversationType: toConversationType(chat.type),
     context: `${stickerEmoji}${context}${photoPlaceholder}`,
     timestamp: (message.date ?? Math.floor(Date.now() / 1000)) * 1000,
     metadata: {
-      isBot: message.from?.is_bot ?? false,
-      isSelf: message.from?.id === ctx.me.id,
-      username: buildDisplayName(message.from),
-      usernameHandle: normalizeUsernameHandle(message.from?.username),
+      isBot: senderIdentity.senderEntityType === "user" ? (message.from?.is_bot ?? false) : false,
+      isSelf: senderIdentity.senderEntityType === "user" && message.from?.id === ctx.me.id,
+      username: buildDisplayNameFromSenderSource(message.from, senderChat),
+      usernameHandle: normalizeUsernameHandle(senderChat?.username ?? message.from?.username),
+      senderEntityType: senderIdentity.senderEntityType,
       replyToMessageId: message.reply_to_message?.message_id ?? null,
-      replyToUserId: message.reply_to_message?.from?.id?.toString() ?? null,
+      replyToUserId: resolveReplyToUserId(message.reply_to_message),
       replyToUsername: replySnapshot.replyToUsername,
       replyToPreviewText: replySnapshot.replyToPreviewText,
       isReplyToMe: message.reply_to_message?.from?.id === ctx.me.id,
@@ -810,21 +839,27 @@ async function toEditedTelegramMessage(
     botUsername: ctx.me.username,
     botUserId: ctx.me.id,
   });
+  const senderChat = (message as TelegramIncomingMessageLike & { sender_chat?: TelegramSenderChatLike }).sender_chat;
+  const senderIdentity = resolveBotApiSenderIdentity({
+    sender: message.from,
+    senderChat,
+  });
 
   return {
-    userId: message.from?.id?.toString() ?? "unknown",
+    userId: senderIdentity.userId,
     messageId: message.message_id,
     chatId: chat.id,
     conversationType: toConversationType(chat.type),
     context: `${stickerEmoji}${context}${photoPlaceholder}`,
     timestamp: (message.date ?? Math.floor(Date.now() / 1000)) * 1000,
     metadata: {
-      isBot: message.from?.is_bot ?? false,
-      isSelf: message.from?.id === ctx.me.id,
-      username: buildDisplayName(message.from),
-      usernameHandle: normalizeUsernameHandle(message.from?.username),
+      isBot: senderIdentity.senderEntityType === "user" ? (message.from?.is_bot ?? false) : false,
+      isSelf: senderIdentity.senderEntityType === "user" && message.from?.id === ctx.me.id,
+      username: buildDisplayNameFromSenderSource(message.from, senderChat),
+      usernameHandle: normalizeUsernameHandle(senderChat?.username ?? message.from?.username),
+      senderEntityType: senderIdentity.senderEntityType,
       replyToMessageId: message.reply_to_message?.message_id ?? null,
-      replyToUserId: message.reply_to_message?.from?.id?.toString() ?? null,
+      replyToUserId: resolveReplyToUserId(message.reply_to_message),
       replyToUsername: replySnapshot.replyToUsername,
       replyToPreviewText: replySnapshot.replyToPreviewText,
       isReplyToMe: message.reply_to_message?.from?.id === ctx.me.id,
@@ -836,27 +871,43 @@ async function toEditedTelegramMessage(
 }
 
 function toOutgoingTelegramMessage(
-  message: Awaited<ReturnType<Bot["api"]["sendMessage"]>>
+  message: Awaited<ReturnType<Bot["api"]["sendMessage"]>>,
+  botUserId?: string | null,
 ): TelegramMessage | null {
   if (!message?.chat) {
     return null;
   }
   const context = (message as { text?: string; caption?: string }).text ?? (message as { caption?: string }).caption ?? "";
   const replySnapshot = extractReplySnapshotFromTelegramMessage(message as TelegramIncomingMessageLike);
+  const senderChat = (message as TelegramIncomingMessageLike & { sender_chat?: TelegramSenderChatLike }).sender_chat;
+  const senderIdentity = resolveBotApiSenderIdentity({
+    sender: message.from,
+    senderChat,
+  });
+  const stableBotUserId = (botUserId ?? "").trim();
+  const fallbackSenderId =
+    senderIdentity.userId === "unknown" && stableBotUserId
+      ? stableBotUserId
+      : senderIdentity.userId;
+  const fallbackSenderEntityType =
+    senderIdentity.senderEntityType === "unknown" && stableBotUserId
+      ? "user"
+      : senderIdentity.senderEntityType;
   return {
-    userId: message.from?.id?.toString() ?? "bot",
+    userId: fallbackSenderId === "unknown" ? "bot" : fallbackSenderId,
     messageId: message.message_id,
     chatId: message.chat.id,
     conversationType: toConversationType(message.chat.type),
     context,
     timestamp: (message.date ?? Math.floor(Date.now() / 1000)) * 1000,
     metadata: {
-      isBot: message.from?.is_bot ?? true,
+      isBot: fallbackSenderEntityType === "user" ? (message.from?.is_bot ?? true) : false,
       isSelf: true,
-      username: buildDisplayName(message.from),
-      usernameHandle: normalizeUsernameHandle(message.from?.username),
+      username: buildDisplayNameFromSenderSource(message.from, senderChat),
+      usernameHandle: normalizeUsernameHandle(senderChat?.username ?? message.from?.username),
+      senderEntityType: fallbackSenderEntityType,
       replyToMessageId: message.reply_to_message?.message_id ?? null,
-      replyToUserId: message.reply_to_message?.from?.id?.toString() ?? null,
+      replyToUserId: resolveReplyToUserId(message.reply_to_message),
       replyToUsername: replySnapshot.replyToUsername,
       replyToPreviewText: replySnapshot.replyToPreviewText,
       isReplyToMe: false,
@@ -884,6 +935,7 @@ function toEditedResultMessage(
     mentions: [] as string[],
     mentionUserIds: [] as string[],
     usernameHandle: null,
+    senderEntityType: "user" as const,
   };
 
   if (result === true) {
@@ -946,6 +998,47 @@ function buildDisplayName(user: {
   }
   const username = (user.username ?? "").trim();
   return username || null;
+}
+
+function buildDisplayNameFromSenderSource(
+  sender: TelegramSenderLike | null | undefined,
+  senderChat: TelegramSenderChatLike | null | undefined,
+): string | null {
+  const senderChatTitle =
+    (senderChat?.title ?? "").trim() ||
+    (senderChat?.first_name ?? "").trim();
+  if (senderChatTitle) {
+    return senderChatTitle;
+  }
+  if (senderChat?.username) {
+    return senderChat.username.trim() || null;
+  }
+  return buildDisplayName(sender);
+}
+
+function resolveBotApiSenderIdentity(input: {
+  sender?: TelegramSenderLike | null;
+  senderChat?: TelegramSenderChatLike | null;
+}): { userId: string; senderEntityType: TelegramSenderEntityType } {
+  const senderChatId = input.senderChat?.id;
+  if (senderChatId !== undefined && senderChatId !== null) {
+    return {
+      userId: `channel:${String(senderChatId).trim()}`,
+      senderEntityType: "channel",
+    };
+  }
+  const senderId = input.sender?.id;
+  if (senderId !== undefined && senderId !== null) {
+    const normalized = String(senderId).trim();
+    return {
+      userId: normalized || "unknown",
+      senderEntityType: normalized ? "user" : "unknown",
+    };
+  }
+  return {
+    userId: "unknown",
+    senderEntityType: "unknown",
+  };
 }
 
 function toOptionalMessageId(messageId?: number | string): number | undefined {
@@ -1087,15 +1180,25 @@ function extractReplySnapshotFromTelegramMessage(
     };
   }
 
-  const speakerFromName = buildDisplayName(reply.from);
-  const speakerFromId =
-    reply.from?.id === undefined || reply.from?.id === null
-      ? null
-      : String(reply.from.id);
+  const speakerFromName = buildDisplayNameFromSenderSource(reply.from, reply.sender_chat);
+  const speakerFromId = resolveReplyToUserId(reply);
   return {
     replyToUsername: speakerFromName ?? speakerFromId,
     replyToPreviewText: extractReplyPreviewFromTelegramMessage(reply),
   };
+}
+
+function resolveReplyToUserId(
+  message: NonNullable<TelegramIncomingMessageLike["reply_to_message"]> | undefined,
+): string | null {
+  if (!message) {
+    return null;
+  }
+  const identity = resolveBotApiSenderIdentity({
+    sender: message.from,
+    senderChat: message.sender_chat,
+  });
+  return identity.userId === "unknown" ? null : identity.userId;
 }
 
 function extractCustomEmojiOccurrences(
