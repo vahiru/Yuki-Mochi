@@ -15,8 +15,18 @@ export type TelegramSenderEntityType =
   | "channel"
   | "unknown";
 
+export interface ActorRef {
+  id: string;
+  entityType: TelegramSenderEntityType;
+  displayName: string | null;
+  username: string | null;
+  usernameHandle: string | null;
+  isBot: boolean;
+}
+
 export interface TelegramMessage {
   userId: string;
+  sender?: ActorRef;
   messageId: number;
   chatId: number;
   conversationType: TelegramConversationType;
@@ -37,5 +47,7 @@ export interface TelegramMessage {
     mentionUserIds?: string[];
     usernameHandle?: string | null;
     senderEntityType?: TelegramSenderEntityType;
+    replyToSender?: ActorRef | null;
+    mentionedActors?: ActorRef[];
   };
 }

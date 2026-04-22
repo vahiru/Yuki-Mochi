@@ -12,6 +12,7 @@ import { markdownToTelegramHtml } from "./markdownToHtml";
 import { createCustomEmojiToTextResolver } from "./custom-emoji-to-text";
 import { createImageAltTextStore } from "./image-to-text-store";
 import type { CustomEmojiToTextConfig } from "./index";
+import { hydrateMessageActors } from "../utils/actor";
 
 const DEFAULT_FINAL_TEXT = "(empty)";
 const DEFAULT_STREAM_PLACEHOLDER = "Working on it... estimated 30-90 seconds.";
@@ -786,7 +787,7 @@ async function toTelegramMessage(
     senderChat,
   });
 
-  return {
+  return hydrateMessageActors({
     userId: senderIdentity.userId,
     messageId: message.message_id,
     chatId: chat.id,
@@ -808,7 +809,7 @@ async function toTelegramMessage(
       mentions,
       mentionUserIds,
     },
-  };
+  });
 }
 
 async function toEditedTelegramMessage(
@@ -845,7 +846,7 @@ async function toEditedTelegramMessage(
     senderChat,
   });
 
-  return {
+  return hydrateMessageActors({
     userId: senderIdentity.userId,
     messageId: message.message_id,
     chatId: chat.id,
@@ -867,7 +868,7 @@ async function toEditedTelegramMessage(
       mentions,
       mentionUserIds,
     },
-  };
+  });
 }
 
 function toOutgoingTelegramMessage(
@@ -893,7 +894,7 @@ function toOutgoingTelegramMessage(
     senderIdentity.senderEntityType === "unknown" && stableBotUserId
       ? "user"
       : senderIdentity.senderEntityType;
-  return {
+  return hydrateMessageActors({
     userId: fallbackSenderId === "unknown" ? "bot" : fallbackSenderId,
     messageId: message.message_id,
     chatId: message.chat.id,
@@ -915,7 +916,7 @@ function toOutgoingTelegramMessage(
       mentions: [],
       mentionUserIds: [],
     },
-  };
+  });
 }
 
 function toEditedResultMessage(
@@ -942,7 +943,7 @@ function toEditedResultMessage(
     if (!state.placeholderMessageId) {
       return null;
     }
-    return {
+    return hydrateMessageActors({
       userId: "bot",
       messageId: state.placeholderMessageId,
       chatId: state.chatId,
@@ -953,10 +954,10 @@ function toEditedResultMessage(
         ...baseMetadata,
         username: state.username,
       },
-    };
+    });
   }
 
-  return {
+  return hydrateMessageActors({
     userId: result.from?.id?.toString() ?? "bot",
     messageId: result.message_id,
     chatId: result.chat.id,
@@ -967,7 +968,7 @@ function toEditedResultMessage(
       ...baseMetadata,
       username: buildDisplayName(result.from) ?? state.username,
     },
-  };
+  });
 }
 
 function toConversationType(type: string): TelegramConversationType {

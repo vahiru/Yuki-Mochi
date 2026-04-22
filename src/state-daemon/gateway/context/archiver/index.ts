@@ -1,6 +1,7 @@
 import type { CloudModel } from "../../../model/llm";
 import type { TelegramMessage } from "../../../types/message";
 import { createMemoryVfsClient, type ChatMessage, type MessageMetadata } from "../../../storage/vfs";
+import { buildMentionActorRefs, buildReplyActorRef, buildSenderActorRef } from "../../../utils/actor";
 import { createArchiveAssembler } from "./assembler";
 import { ARCHIVER_SYSTEM_PROMPT } from "./prompt";
 
@@ -18,6 +19,17 @@ type ExtendedMessageMetadata = MessageMetadata & {
   mentionUserIds?: string[];
   usernameHandle?: string;
   senderEntityType?: TelegramMessage["metadata"]["senderEntityType"];
+  actorId?: string;
+  actorDisplayName?: string;
+  actorUsername?: string;
+  actorUsernameHandle?: string;
+  actorEntityType?: TelegramMessage["metadata"]["senderEntityType"];
+  replyToActorId?: string;
+  replyToActorDisplayName?: string;
+  replyToActorUsername?: string;
+  replyToActorUsernameHandle?: string;
+  replyToActorEntityType?: TelegramMessage["metadata"]["senderEntityType"];
+  mentionedActorIds?: string[];
 };
 
 export interface BackgroundArchiveSession {
@@ -80,6 +92,9 @@ export function createArchiverService(options: CreateArchiverServiceOptions = {}
 }
 
 function toVfsChatMessage(message: TelegramMessage, vector: number[]): ChatMessage {
+  const sender = buildSenderActorRef(message);
+  const replyToSender = buildReplyActorRef(message);
+  const mentionedActors = buildMentionActorRefs(message).filter((actor) => actor.id !== "unknown");
   const metadata: ExtendedMessageMetadata = {
     isBot: message.metadata.isBot,
     username: message.metadata.username ?? "",
@@ -93,6 +108,17 @@ function toVfsChatMessage(message: TelegramMessage, vector: number[]): ChatMessa
     mentionUserIds: message.metadata.mentionUserIds ?? [],
     usernameHandle: message.metadata.usernameHandle ?? "",
     senderEntityType: message.metadata.senderEntityType ?? "unknown",
+    actorId: sender?.id ?? message.userId,
+    actorDisplayName: sender?.displayName ?? message.metadata.username ?? "",
+    actorUsername: sender?.username ?? "",
+    actorUsernameHandle: sender?.usernameHandle ?? message.metadata.usernameHandle ?? "",
+    actorEntityType: sender?.entityType ?? message.metadata.senderEntityType ?? "unknown",
+    replyToActorId: replyToSender?.id ?? message.metadata.replyToUserId ?? "",
+    replyToActorDisplayName: replyToSender?.displayName ?? message.metadata.replyToUsername ?? "",
+    replyToActorUsername: replyToSender?.username ?? "",
+    replyToActorUsernameHandle: replyToSender?.usernameHandle ?? "",
+    replyToActorEntityType: replyToSender?.entityType ?? "unknown",
+    mentionedActorIds: mentionedActors.map((actor) => actor.id),
   };
   return {
     userId: message.userId,

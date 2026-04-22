@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import type { ParticipantState, ResolvedTarget } from "../gateway/context/core/types";
 import type { TelegramMessage } from "../types/message";
-import { formatNormalMessageNode } from "./messageXml";
+import {
+  formatIdentityEventNode,
+  formatNormalMessageNode,
+  formatParticipantNode,
+  formatResolvedTargetNode,
+} from "./messageXml";
 
 function createMessage(overrides?: Partial<TelegramMessage["metadata"]>): TelegramMessage {
   return {
@@ -51,7 +57,9 @@ describe("formatNormalMessageNode", () => {
   test("renders sender identity attributes", () => {
     const rendered = formatNormalMessageNode(createMessage());
     expect(rendered).toContain('sender_id="1001"');
+    expect(rendered).toContain('sender_entity_type="user"');
     expect(rendered).toContain('speaker="alice"');
+    expect(rendered).toContain('display_name="alice"');
     expect(rendered).toContain('sender_handle="@alice"');
   });
 
@@ -70,7 +78,7 @@ describe("formatNormalMessageNode", () => {
       replyToUserId: "2002",
     });
     const rendered = formatNormalMessageNode(message, replyTarget);
-    expect(rendered).toContain('<reply_to_preview sender_id="2002" speaker="bob" sender_handle="@bob">reply text</reply_to_preview>');
+    expect(rendered).toContain('<reply_to_preview sender_id="2002" sender_entity_type="user" speaker="bob" display_name="bob" username="bob" sender_handle="@bob">reply text</reply_to_preview>');
   });
 
   test("renders fallback reply preview sender identity", () => {
@@ -81,6 +89,62 @@ describe("formatNormalMessageNode", () => {
       replyToPreviewText: "latest update",
     });
     const rendered = formatNormalMessageNode(message);
-    expect(rendered).toContain('<reply_to_preview sender_id="channel:777" speaker="@announcements" sender_handle="@announcements">latest update</reply_to_preview>');
+    expect(rendered).toContain('<reply_to_preview sender_id="channel:777" sender_entity_type="channel" speaker="@announcements" display_name="@announcements" username="announcements" sender_handle="@announcements">latest update</reply_to_preview>');
+  });
+});
+
+describe("identity helpers", () => {
+  test("renders participant state", () => {
+    const participant: ParticipantState = {
+      actor: {
+        id: "1001",
+        entityType: "user",
+        displayName: "Alice",
+        username: "alice",
+        usernameHandle: "@alice",
+        isBot: false,
+      },
+      firstSeenAt: 1710000000000,
+      lastSeenAt: 1710000600000,
+      messageCount: 4,
+      recentMessageIds: [1, 2, 3, 4],
+      displayNameHistory: ["Alice", "Alice Zhang"],
+      usernameHistory: ["@alice"],
+      hasDisplayNameConflict: true,
+    };
+    const rendered = formatParticipantNode(participant);
+    expect(rendered).toContain('<participant ');
+    expect(rendered).toContain('sender_id="1001"');
+    expect(rendered).toContain('message_count="4"');
+    expect(rendered).toContain('name_conflict="true"');
+  });
+
+  test("renders identity event node", () => {
+    const rendered = formatIdentityEventNode({
+      type: "name_change",
+      actorId: "1001",
+      oldDisplayName: "Alice",
+      newDisplayName: "Alice Zhang",
+      oldUsernameHandle: "@alice",
+      newUsernameHandle: "@alice_zhang",
+      timestamp: 1710000600000,
+    });
+    expect(rendered).toContain('type="name_change"');
+    expect(rendered).toContain('sender_id="1001"');
+    expect(rendered).toContain('new_display_name="Alice Zhang"');
+  });
+
+  test("renders resolved target node", () => {
+    const target: ResolvedTarget = {
+      actorId: "2002",
+      entityType: "user",
+      displayName: "Bob",
+      usernameHandle: "@bob",
+      via: "reply",
+    };
+    const rendered = formatResolvedTargetNode(target);
+    expect(rendered).toContain('sender_id="2002"');
+    expect(rendered).toContain('via="reply"');
+    expect(rendered).toContain('sender_handle="@bob"');
   });
 });

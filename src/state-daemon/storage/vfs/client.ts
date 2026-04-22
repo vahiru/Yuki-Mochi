@@ -50,7 +50,7 @@ import type {
 const MAX_GRPC_MESSAGE_BYTES = 16 * 1024 * 1024;
 const SEMANTIC_RESULT_MAX_MESSAGES = 6;
 const MIN_SEMANTIC_RESULT_SCORE = 0.45;
-const SPEAKER_VIEW_MULTIPLIER = 6;
+const ACTOR_VIEW_MULTIPLIER = 6;
 
 interface ExactSearchTarget {
   chatId: string;
@@ -61,6 +61,7 @@ interface MemorySearchRow {
   msg_id?: number | string | null;
   ts?: string | number | null;
   chat_id?: number | string | null;
+  actor_id?: string | null;
   speaker?: string | null;
   reply_to?: number | string | null;
   text?: string | null;
@@ -72,10 +73,21 @@ interface StoredMessageMeta {
   username?: string;
   usernameHandle?: string;
   senderEntityType?: string;
+  actorId?: string;
+  actorDisplayName?: string;
+  actorUsername?: string;
+  actorUsernameHandle?: string;
+  actorEntityType?: string;
   replyToUserId?: string;
   replyToUsername?: string;
   replyToPreviewText?: string;
+  replyToActorId?: string;
+  replyToActorDisplayName?: string;
+  replyToActorUsername?: string;
+  replyToActorUsernameHandle?: string;
+  replyToActorEntityType?: string;
   mentionUserIds?: string[];
+  mentionedActorIds?: string[];
   isBot?: boolean;
   isReplyToMe?: boolean;
   isMentionMe?: boolean;
@@ -184,29 +196,26 @@ export class MemoryVfsClient {
     return this.searchSemanticLike(request);
   }
 
-  async searchSemanticBySpeaker(input: {
+  async searchSemanticByActor(input: {
     chatId: string;
-    speaker: string;
+    actorId: string;
     query: string;
     limit?: number;
   }): Promise<SearchResponse> {
     const chatId = input.chatId.trim();
-    const speaker = input.speaker.trim();
+    const actorId = input.actorId.trim();
     const query = input.query.trim();
-    if (!chatId || !speaker || !query) {
+    if (!chatId || !actorId || !query) {
       return { results: [] };
     }
 
     const outputLimit = Math.max(1, input.limit ?? 5);
-    const fetchLimit = Math.max(outputLimit * SPEAKER_VIEW_MULTIPLIER, 20);
+    const fetchLimit = Math.max(outputLimit * ACTOR_VIEW_MULTIPLIER, 20);
     const params = JSON.stringify({
-      speaker,
+      actor_id: actorId,
       limit: fetchLimit,
     });
-    const resp = await this.logosClient.read(
-      { uri: `logos://memory/groups/${chatId}/views/by_speaker/${params}` },
-      await this.buildOptions(),
-    );
+    const resp = await this.readActorScopedView(chatId, params, actorId);
 
     const rows = parseMemorySearchRows(resp.content);
     if (rows.length === 0) {
@@ -216,7 +225,7 @@ export class MemoryVfsClient {
     const ranked = rows
       .map((row) => {
         const message = toChatMessage(row, chatId);
-        if (!message || message.userId !== speaker) {
+        if (!message || message.userId !== actorId) {
           return null;
         }
         const score = scoreSemanticAcrossQueries(query, message.context);
@@ -248,6 +257,20 @@ export class MemoryVfsClient {
       score: Math.min(1, ranked[0].score + 0.08),
     };
     return { results: [result] };
+  }
+
+  async searchSemanticBySpeaker(input: {
+    chatId: string;
+    speaker: string;
+    query: string;
+    limit?: number;
+  }): Promise<SearchResponse> {
+    return this.searchSemanticByActor({
+      chatId: input.chatId,
+      actorId: input.speaker,
+      query: input.query,
+      limit: input.limit,
+    });
   }
 
   private async searchSemanticLike(request: SearchRequest): Promise<SearchResponse> {
@@ -316,6 +339,31 @@ export class MemoryVfsClient {
       await this.buildOptions(),
     );
     return parseMemorySearchRows(resp.resultJson);
+  }
+
+  private async readActorScopedView(
+    chatId: string,
+    params: string,
+    actorId: string,
+  ): Promise<{ content: string }> {
+    try {
+      return await this.logosClient.read(
+        { uri: `logos://memory/groups/${chatId}/views/by_actor/${params}` },
+        await this.buildOptions(),
+      );
+    } catch (error) {
+      if (!isUnknownMemoryViewError(error)) {
+        throw error;
+      }
+      const legacyParams = JSON.stringify({
+        speaker: actorId,
+        limit: JSON.parse(params).limit,
+      });
+      return this.logosClient.read(
+        { uri: `logos://memory/groups/${chatId}/views/by_speaker/${legacyParams}` },
+        await this.buildOptions(),
+      );
+    }
   }
 
   private async searchExact(request: SearchRequest): Promise<SearchResponse> {
@@ -391,9 +439,13 @@ export class MemoryVfsClient {
     for (const msg of request.messages) {
       const normalizedTsMs = normalizeTimestamp(msg.timestamp);
       const metadata = msg.metadata as (MessageMetadata & StoredMessageMeta) | undefined;
+      const actorId = (metadata?.actorId || msg.userId || "").trim() || "unknown";
+      const actorEntityType = (metadata?.actorEntityType || metadata?.senderEntityType || inferSenderEntityType(actorId)).trim() || "unknown";
+      const mentionedActorIds = metadata?.mentionedActorIds || metadata?.mentionUserIds || [];
       const msgJson = JSON.stringify({
         ts: new Date(normalizedTsMs).toISOString(),
         chat_id: msg.chatId,
+        actor_id: actorId,
         speaker: msg.userId,
         reply_to: metadata?.replyToMessageId
           ? parseInt(metadata.replyToMessageId, 10) || null
@@ -405,10 +457,21 @@ export class MemoryVfsClient {
               username: metadata.username || "",
               usernameHandle: metadata.usernameHandle || "",
               senderEntityType: metadata.senderEntityType || "",
+              actorId,
+              actorDisplayName: metadata.actorDisplayName || metadata.username || "",
+              actorUsername: metadata.actorUsername || "",
+              actorUsernameHandle: metadata.actorUsernameHandle || metadata.usernameHandle || "",
+              actorEntityType,
               replyToUserId: metadata.replyToUserId || "",
               replyToUsername: metadata.replyToUsername || "",
               replyToPreviewText: metadata.replyToPreviewText || "",
+              replyToActorId: metadata.replyToActorId || metadata.replyToUserId || "",
+              replyToActorDisplayName: metadata.replyToActorDisplayName || metadata.replyToUsername || "",
+              replyToActorUsername: metadata.replyToActorUsername || "",
+              replyToActorUsernameHandle: metadata.replyToActorUsernameHandle || "",
+              replyToActorEntityType: metadata.replyToActorEntityType || "",
               mentionUserIds: metadata.mentionUserIds || [],
+              mentionedActorIds,
               isBot: metadata.isBot ?? false,
               isReplyToMe: metadata.isReplyToMe ?? false,
               isMentionMe: metadata.isMentionMe ?? false,
@@ -538,23 +601,25 @@ function toChatMessage(row: MemorySearchRow, fallbackChatId: string): ChatMessag
   }
 
   const meta = parseStoredMessageMeta(row.meta);
+  const actorId = resolveRowActorId(row, meta);
+  const replyToActorId = meta.replyToActorId ?? meta.replyToUserId ?? "";
   const metadata: MessageMetadata = {
     isBot: meta.isBot ?? false,
-    username: meta.username ?? "",
+    username: meta.actorDisplayName ?? meta.username ?? "",
     replyToMessageId: toReplyToMessageId(row.reply_to),
-    replyToUserId: meta.replyToUserId ?? "",
+    replyToUserId: replyToActorId,
     isReplyToMe: meta.isReplyToMe ?? false,
     isMentionMe: meta.isMentionMe ?? false,
     mentions: parseMentions(row.mentions),
-    replyToUsername: meta.replyToUsername ?? "",
+    replyToUsername: meta.replyToActorDisplayName ?? meta.replyToUsername ?? "",
     replyToPreviewText: meta.replyToPreviewText ?? "",
-    mentionUserIds: meta.mentionUserIds ?? [],
-    usernameHandle: meta.usernameHandle ?? "",
-    senderEntityType: meta.senderEntityType ?? inferSenderEntityType(row.speaker),
+    mentionUserIds: meta.mentionedActorIds ?? meta.mentionUserIds ?? [],
+    usernameHandle: meta.actorUsernameHandle ?? meta.usernameHandle ?? "",
+    senderEntityType: meta.actorEntityType ?? meta.senderEntityType ?? inferSenderEntityType(actorId),
   } as MessageMetadata;
 
   return {
-    userId: typeof row.speaker === "string" && row.speaker.trim() !== "" ? row.speaker : "unknown",
+    userId: actorId,
     messageId: String(messageId),
     chatId,
     conversationType: "supergroup",
@@ -593,11 +658,24 @@ function parseStoredMessageMeta(value: unknown): StoredMessageMeta {
     username: typeof raw.username === "string" ? raw.username : undefined,
     usernameHandle: typeof raw.usernameHandle === "string" ? raw.usernameHandle : undefined,
     senderEntityType: typeof raw.senderEntityType === "string" ? raw.senderEntityType : undefined,
+    actorId: typeof raw.actorId === "string" ? raw.actorId : undefined,
+    actorDisplayName: typeof raw.actorDisplayName === "string" ? raw.actorDisplayName : undefined,
+    actorUsername: typeof raw.actorUsername === "string" ? raw.actorUsername : undefined,
+    actorUsernameHandle: typeof raw.actorUsernameHandle === "string" ? raw.actorUsernameHandle : undefined,
+    actorEntityType: typeof raw.actorEntityType === "string" ? raw.actorEntityType : undefined,
     replyToUserId: typeof raw.replyToUserId === "string" ? raw.replyToUserId : undefined,
     replyToUsername: typeof raw.replyToUsername === "string" ? raw.replyToUsername : undefined,
     replyToPreviewText: typeof raw.replyToPreviewText === "string" ? raw.replyToPreviewText : undefined,
+    replyToActorId: typeof raw.replyToActorId === "string" ? raw.replyToActorId : undefined,
+    replyToActorDisplayName: typeof raw.replyToActorDisplayName === "string" ? raw.replyToActorDisplayName : undefined,
+    replyToActorUsername: typeof raw.replyToActorUsername === "string" ? raw.replyToActorUsername : undefined,
+    replyToActorUsernameHandle: typeof raw.replyToActorUsernameHandle === "string" ? raw.replyToActorUsernameHandle : undefined,
+    replyToActorEntityType: typeof raw.replyToActorEntityType === "string" ? raw.replyToActorEntityType : undefined,
     mentionUserIds: Array.isArray(raw.mentionUserIds)
       ? raw.mentionUserIds.map((item) => String(item)).filter((item) => item.length > 0)
+      : undefined,
+    mentionedActorIds: Array.isArray(raw.mentionedActorIds)
+      ? raw.mentionedActorIds.map((item) => String(item)).filter((item) => item.length > 0)
       : undefined,
     isBot: typeof raw.isBot === "boolean" ? raw.isBot : undefined,
     isReplyToMe: typeof raw.isReplyToMe === "boolean" ? raw.isReplyToMe : undefined,
@@ -676,6 +754,19 @@ function normalizeEpochMs(value: number): number {
   return Date.now();
 }
 
+function resolveRowActorId(row: MemorySearchRow, meta: StoredMessageMeta): string {
+  const actorId = typeof meta.actorId === "string" ? meta.actorId.trim() : "";
+  if (actorId) {
+    return actorId;
+  }
+  const rootActorId = typeof row.actor_id === "string" ? row.actor_id.trim() : "";
+  if (rootActorId) {
+    return rootActorId;
+  }
+  const speaker = typeof row.speaker === "string" ? row.speaker.trim() : "";
+  return speaker || "unknown";
+}
+
 function inferSenderEntityType(value: unknown): string {
   const speaker = typeof value === "string" ? value.trim() : "";
   if (!speaker || speaker === "unknown") {
@@ -688,6 +779,20 @@ function inferSenderEntityType(value: unknown): string {
     return "chat";
   }
   return "user";
+}
+
+function isUnknownMemoryViewError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "";
+  return (
+    message.includes("unknown view") ||
+    message.includes("NotFound") ||
+    message.includes("by_actor")
+  );
 }
 
 function dedupeSemanticMessages(messages: ChatMessage[]): ChatMessage[] {

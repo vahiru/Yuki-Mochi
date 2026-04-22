@@ -1,6 +1,6 @@
 import { createDenseEmbedder, type DenseEmbedder } from "../../../model/embedding";
 import type { CloudModel, LocalModel } from "../../../model/llm";
-import type { TelegramMessage } from "../../../types/message";
+import type { ActorRef, TelegramMessage } from "../../../types/message";
 import { createArchiverService } from "../archiver";
 import { createContextSearcher } from "../searcher";
 import {
@@ -12,11 +12,27 @@ import {
 import type { SearchResult } from "../../../storage/vfs";
 import type {
   ChatControlBlock,
+  ContextAnchorSnapshot,
+  ContextIdentityEvent,
   ContextStore,
   MessageNode,
+  ParticipantState,
+  ResolvedTarget,
   SessionControlBlock,
   SessionStatus,
 } from "./types";
+import {
+  buildMentionActorRefs,
+  buildReplyActorRef,
+  buildSenderActorRef,
+  createActorRef,
+  hydrateMessageActors,
+  inferSenderEntityTypeFromId,
+  isKnownActorId,
+  mergeActorRef,
+  normalizeDisplayName,
+  normalizeUsernameHandle,
+} from "../../../utils/actor";
 
 export interface CreateInMemoryContextStoreOptions {
   embedder?: DenseEmbedder;
@@ -55,6 +71,11 @@ const SELF_SPEAKER_SEMANTIC_THRESHOLD = 0.68;
 const GROUP_SEMANTIC_THRESHOLD = 0.74;
 const GROUP_RECALL_MIN_TEXT_LENGTH = 20;
 const RECALL_RESULT_LIMIT = 6;
+const PARTICIPANT_RECENT_MESSAGE_LIMIT = 5;
+const PARTICIPANT_HISTORY_LIMIT = 5;
+const IDENTITY_EVENT_HISTORY_LIMIT = 64;
+const CONTEXT_PARTICIPANT_LIMIT = 12;
+const CONTEXT_IDENTITY_EVENT_LIMIT = 12;
 
 export function createInMemoryContextStore(
   options: CreateInMemoryContextStoreOptions = {}
@@ -84,32 +105,34 @@ export function createInMemoryContextStore(
       const now = message.timestamp;
       const chatId = message.chatId;
       const messageId = message.messageId;
-      const isShortMessage = message.context.length <= SHORT_MESSAGE_LENGTH;
       const ccb = getOrCreateChatControlBlock(chatControlBlocks, chatId);
-      refreshUsernameAlias(ccb, message, now);
+      const materializedMessage = materializeMessageActors(ccb, message, now);
+      const isShortMessage = materializedMessage.context.length <= SHORT_MESSAGE_LENGTH;
+      refreshUsernameAlias(ccb, materializedMessage, now);
       void downgradeExpiredSessions(ccb, now, SESSION_LRU_EXPIRE_MS, archiverService);
       const existing = ccb.messageNodes.get(messageId);
       if (existing) {
-        existing.message = message;
-        existing.timestamp = message.timestamp;
+        existing.message = materializedMessage;
+        existing.timestamp = materializedMessage.timestamp;
+        upsertParticipantState(ccb, materializedMessage, { incrementMessageCount: false });
         updateLastMessageNodeId(ccb, existing);
         return;
       }
 
-      const textForEmbedding = buildEmbeddingTextWithGhostContext(ccb, message);
+      const textForEmbedding = buildEmbeddingTextWithGhostContext(ccb, materializedMessage);
       // const textForEmbedding = message.context;
       const vector = await embedMessage(embedder, textForEmbedding);
       // console.log("vector", vector);
-      const replyToId = message.metadata.replyToMessageId;
+      const replyToId = materializedMessage.metadata.replyToMessageId;
       const replyTarget = replyToId ? ccb.messageNodes.get(replyToId) ?? null : null;
       const replySession = replyTarget
         ? ccb.sessionControlBlocks.get(replyTarget.sessionId) ?? null
         : null;
 
       const node: MessageNode = {
-        message,
+        message: materializedMessage,
         messageId,
-        timestamp: message.timestamp,
+        timestamp: materializedMessage.timestamp,
         replyToId: replyTarget?.messageId ?? null,
         childrenIds: [],
         sessionId: "",
@@ -130,11 +153,11 @@ export function createInMemoryContextStore(
         shouldUpdateCenter = !isShortMessage;
         setSessionActive(ccb, targetSession.sessionId);
       } else {
-        if (message.metadata.replyToMessageId !== null) {
+        if (materializedMessage.metadata.replyToMessageId !== null) {
           try {
             const searchExactResult = await contextSearcher.searchByMessageId({
               chatId,
-              messageId: message.metadata.replyToMessageId,
+              messageId: materializedMessage.metadata.replyToMessageId,
             });
             if (searchExactResult) {
               const recalledSession = recallSession(ccb, searchExactResult, now);
@@ -154,7 +177,7 @@ export function createInMemoryContextStore(
             now,
             gammaTime,
             lambda,
-            message.context.length <= MEDIUM_MESSAGE_LENGTH,
+            materializedMessage.context.length <= MEDIUM_MESSAGE_LENGTH,
             isShortMessage,
             similarityThreshold,
             shortMessageThreshold
@@ -167,7 +190,7 @@ export function createInMemoryContextStore(
             targetSession = await tryAssignSessionByDecider({
               targetSession,
               ccb,
-              message,
+              message: materializedMessage,
               localModel,
               cloudModel,
               sessionDecider,
@@ -180,19 +203,20 @@ export function createInMemoryContextStore(
 
       if (!targetSession) {
         try {
-          const explicitTargetSpeakerIds = collectExplicitRecallSpeakerIds(ccb, message, now);
-          const semanticResolution = resolveRecallTargetSpeakerIds(
+          const explicitTargets = collectExplicitResolvedTargets(ccb, materializedMessage, now);
+          const explicitTargetActorIds = collectKnownTargetActorIds(explicitTargets);
+          const semanticResolution = resolveRecallTargetActorIds(
             ccb,
-            message,
+            materializedMessage,
             now,
-            explicitTargetSpeakerIds,
+            explicitTargetActorIds,
           );
           const targetScopedResults = filterSearchResultsByScore(
             await contextSearcher.searchSemantic({
               chatId,
-              query: message.context,
+              query: materializedMessage.context,
               limit: RECALL_RESULT_LIMIT,
-              targetSpeakerIds: semanticResolution.targetSpeakerIds,
+              targetActorIds: semanticResolution.targetActorIds,
             }),
             TARGET_SPEAKER_SEMANTIC_THRESHOLD,
           );
@@ -200,13 +224,13 @@ export function createInMemoryContextStore(
           let semanticResults = targetScopedResults;
           let recallStage: "target" | "self" | "group" | "none" = semanticResults.length > 0 ? "target" : "none";
 
-          if (semanticResults.length === 0 && !semanticResolution.targetSpeakerIds.includes(message.userId)) {
+          if (semanticResults.length === 0 && !semanticResolution.targetActorIds.includes(materializedMessage.userId)) {
             const selfScopedResults = filterSearchResultsByScore(
               await contextSearcher.searchSemantic({
                 chatId,
-                query: message.context,
+                query: materializedMessage.context,
                 limit: RECALL_RESULT_LIMIT,
-                targetSpeakerIds: [message.userId],
+                targetActorIds: [materializedMessage.userId],
               }),
               SELF_SPEAKER_SEMANTIC_THRESHOLD,
             );
@@ -218,12 +242,12 @@ export function createInMemoryContextStore(
 
           if (
             semanticResults.length === 0 &&
-            shouldAllowGroupWideSemanticRecall(message, semanticResolution.reason, explicitTargetSpeakerIds)
+            shouldAllowGroupWideSemanticRecall(materializedMessage, semanticResolution.reason, explicitTargetActorIds)
           ) {
             const groupScopedResults = filterSearchResultsByScore(
               await contextSearcher.searchSemantic({
                 chatId,
-                query: message.context,
+                query: materializedMessage.context,
                 limit: RECALL_RESULT_LIMIT,
               }),
               GROUP_SEMANTIC_THRESHOLD,
@@ -236,7 +260,7 @@ export function createInMemoryContextStore(
 
           if (recallDebugEnabled) {
             console.log(
-              `[recall] chat=${chatId} messageId=${message.messageId} reason=${semanticResolution.reason} targets=${semanticResolution.targetSpeakerIds.join(",") || "-"} stage=${recallStage} count=${semanticResults.length} topScore=${semanticResults[0]?.score ?? 0}`,
+              `[recall] chat=${chatId} messageId=${materializedMessage.messageId} reason=${semanticResolution.reason} targets=${semanticResolution.targetActorIds.join(",") || "-"} stage=${recallStage} count=${semanticResults.length} topScore=${semanticResults[0]?.score ?? 0}`,
             );
           }
 
@@ -258,6 +282,7 @@ export function createInMemoryContextStore(
 
       node.sessionId = targetSession.sessionId;
       ccb.messageNodes.set(node.messageId, node);
+      upsertParticipantState(ccb, materializedMessage, { incrementMessageCount: true });
       updateLastMessageNodeId(ccb, node);
       targetSession.messageIds.add(node.messageId);
       targetSession.lastActiveTime = now;
@@ -292,11 +317,11 @@ export function createInMemoryContextStore(
     getContextByAnchor: ({ chatId, messageId }) => {
       const ccb = chatControlBlocks.get(chatId);
       if (!ccb) {
-        return [[], []];
+        return createEmptyContextAnchorSnapshot();
       }
       const node = ccb.messageNodes.get(messageId);
       if (!node) {
-        return [[], []];
+        return createEmptyContextAnchorSnapshot();
       }
       const anchorReplyToId = node.message.metadata.replyToMessageId;
       const anchorReplyTarget = anchorReplyToId !== null
@@ -316,7 +341,7 @@ export function createInMemoryContextStore(
             RECENT_CHAT_MESSAGES_COUNT,
           );
         }
-        return [recentMessages, []];
+        return buildContextAnchorSnapshot(ccb, node, recentMessages, []);
       }
 
       const allSessionMessages = [...session.messageIds]
@@ -351,7 +376,7 @@ export function createInMemoryContextStore(
           );
         }
       }
-      return [recentMessages, sessionMessages];
+      return buildContextAnchorSnapshot(ccb, node, recentMessages, sessionMessages);
     },
     getSessionIdForMessage: ({ chatId, messageId }) => {
       const ccb = chatControlBlocks.get(chatId);
@@ -423,6 +448,10 @@ function getOrCreateChatControlBlock(
     sessionControlBlocks: new Map<string, SessionControlBlock>(),
     messageNodes: new Map<number, MessageNode>(),
     usernameHandleToUserId: new Map<string, { userId: string; expiresAt: number }>(),
+    participantsById: new Map<string, ParticipantState>(),
+    displayNameToActorIds: new Map<string, Set<string>>(),
+    displayNameConflictSignatures: new Map<string, string>(),
+    identityEvents: [],
     lastMessageNodeId: null,
     nextSessionSeq: 1,
   };
@@ -435,12 +464,289 @@ function parseBooleanEnv(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
-function normalizeUsernameHandle(value: string | null | undefined): string | null {
-  const raw = (value ?? "").trim().toLowerCase();
-  if (!raw) {
+function createEmptyContextAnchorSnapshot(): ContextAnchorSnapshot {
+  return {
+    recentMessages: [],
+    sessionMessages: [],
+    participants: [],
+    identityEvents: [],
+    resolvedTargets: [],
+  };
+}
+
+function resolveKnownParticipantActor(
+  ccb: ChatControlBlock,
+  actorId: string | null | undefined,
+): ActorRef | null {
+  if (!isKnownActorId(actorId)) {
     return null;
   }
-  return raw.startsWith("@") ? raw : `@${raw}`;
+  const stableActorId = actorId.trim();
+  const known = ccb.participantsById.get(stableActorId);
+  if (known) {
+    return { ...known.actor };
+  }
+  return createActorRef({
+    id: stableActorId,
+    entityType: inferSenderEntityTypeFromId(stableActorId),
+  });
+}
+
+function materializeMessageActors(
+  ccb: ChatControlBlock,
+  message: TelegramMessage,
+  now: number,
+): TelegramMessage {
+  const fallbackReplyToSender = resolveKnownParticipantActor(ccb, message.metadata.replyToUserId);
+  return hydrateMessageActors(message, {
+    fallbackReplyToSender,
+    resolveHandleToActorId: (handle) => resolveUserIdByUsernameHandle(ccb, handle, now),
+  });
+}
+
+function recordIdentityEvent(ccb: ChatControlBlock, event: ContextIdentityEvent): void {
+  ccb.identityEvents.push(event);
+  if (ccb.identityEvents.length > IDENTITY_EVENT_HISTORY_LIMIT) {
+    ccb.identityEvents.splice(0, ccb.identityEvents.length - IDENTITY_EVENT_HISTORY_LIMIT);
+  }
+}
+
+function pushHistoryValue(history: string[], value: string | null, limit: number): string[] {
+  const normalized = (value ?? "").trim();
+  if (!normalized) {
+    return history;
+  }
+  const next = [...history.filter((item) => item !== normalized), normalized];
+  if (next.length <= limit) {
+    return next;
+  }
+  return next.slice(next.length - limit);
+}
+
+function appendRecentMessageId(messageIds: number[], messageId: number): number[] {
+  const next = [...messageIds.filter((item) => item !== messageId), messageId];
+  if (next.length <= PARTICIPANT_RECENT_MESSAGE_LIMIT) {
+    return next;
+  }
+  return next.slice(next.length - PARTICIPANT_RECENT_MESSAGE_LIMIT);
+}
+
+function normalizeDisplayNameKey(value: string | null | undefined): string | null {
+  const normalized = normalizeDisplayName(value);
+  return normalized ? normalized.toLowerCase() : null;
+}
+
+function syncDisplayNameConflictState(
+  ccb: ChatControlBlock,
+  displayNameKey: string | null,
+  timestamp: number,
+): void {
+  if (!displayNameKey) {
+    return;
+  }
+  const actorIds = Array.from(ccb.displayNameToActorIds.get(displayNameKey) ?? []).sort();
+  const hasConflict = actorIds.length >= 2;
+  for (const actorId of actorIds) {
+    const participant = ccb.participantsById.get(actorId);
+    if (participant) {
+      participant.hasDisplayNameConflict = hasConflict;
+    }
+  }
+  if (!hasConflict) {
+    ccb.displayNameConflictSignatures.delete(displayNameKey);
+    return;
+  }
+  const signature = actorIds.join(",");
+  if (ccb.displayNameConflictSignatures.get(displayNameKey) === signature) {
+    return;
+  }
+  ccb.displayNameConflictSignatures.set(displayNameKey, signature);
+  const displayName =
+    ccb.participantsById.get(actorIds[0] ?? "")?.actor.displayName ??
+    displayNameKey;
+  recordIdentityEvent(ccb, {
+    type: "display_name_conflict",
+    displayName,
+    actorIds,
+    timestamp,
+  });
+}
+
+function moveParticipantDisplayNameIndex(
+  ccb: ChatControlBlock,
+  actorId: string,
+  previousDisplayName: string | null,
+  nextDisplayName: string | null,
+  timestamp: number,
+): void {
+  const previousKey = normalizeDisplayNameKey(previousDisplayName);
+  const nextKey = normalizeDisplayNameKey(nextDisplayName);
+  if (previousKey && previousKey !== nextKey) {
+    const previousBucket = ccb.displayNameToActorIds.get(previousKey);
+    if (previousBucket) {
+      previousBucket.delete(actorId);
+      if (previousBucket.size === 0) {
+        ccb.displayNameToActorIds.delete(previousKey);
+      }
+    }
+    syncDisplayNameConflictState(ccb, previousKey, timestamp);
+  }
+  if (nextKey) {
+    let nextBucket = ccb.displayNameToActorIds.get(nextKey);
+    if (!nextBucket) {
+      nextBucket = new Set<string>();
+      ccb.displayNameToActorIds.set(nextKey, nextBucket);
+    }
+    nextBucket.add(actorId);
+    syncDisplayNameConflictState(ccb, nextKey, timestamp);
+  }
+  const participant = ccb.participantsById.get(actorId);
+  if (participant) {
+    const activeKey = normalizeDisplayNameKey(participant.actor.displayName);
+    participant.hasDisplayNameConflict = activeKey
+      ? (ccb.displayNameToActorIds.get(activeKey)?.size ?? 0) >= 2
+      : false;
+  }
+}
+
+function upsertParticipantState(
+  ccb: ChatControlBlock,
+  message: TelegramMessage,
+  options: { incrementMessageCount: boolean },
+): void {
+  const sender = buildSenderActorRef(message);
+  if (!sender || !isKnownActorId(sender.id)) {
+    return;
+  }
+  const existing = ccb.participantsById.get(sender.id);
+  const previousDisplayName = existing?.actor.displayName ?? null;
+  const previousUsernameHandle = existing?.actor.usernameHandle ?? null;
+  const nextActor = mergeActorRef(existing?.actor, sender) ?? sender;
+
+  if (!existing) {
+    const participant: ParticipantState = {
+      actor: nextActor,
+      firstSeenAt: message.timestamp,
+      lastSeenAt: message.timestamp,
+      messageCount: options.incrementMessageCount ? 1 : 0,
+      recentMessageIds: options.incrementMessageCount ? [message.messageId] : [],
+      displayNameHistory: pushHistoryValue([], nextActor.displayName, PARTICIPANT_HISTORY_LIMIT),
+      usernameHistory: pushHistoryValue([], nextActor.usernameHandle ?? nextActor.username, PARTICIPANT_HISTORY_LIMIT),
+      hasDisplayNameConflict: false,
+    };
+    ccb.participantsById.set(sender.id, participant);
+  } else {
+    existing.actor = nextActor;
+    existing.lastSeenAt = Math.max(existing.lastSeenAt, message.timestamp);
+    if (options.incrementMessageCount) {
+      existing.messageCount += 1;
+      existing.recentMessageIds = appendRecentMessageId(existing.recentMessageIds, message.messageId);
+    }
+    existing.displayNameHistory = pushHistoryValue(
+      existing.displayNameHistory,
+      nextActor.displayName,
+      PARTICIPANT_HISTORY_LIMIT,
+    );
+    existing.usernameHistory = pushHistoryValue(
+      existing.usernameHistory,
+      nextActor.usernameHandle ?? nextActor.username,
+      PARTICIPANT_HISTORY_LIMIT,
+    );
+  }
+
+  const participant = ccb.participantsById.get(sender.id);
+  if (!participant) {
+    return;
+  }
+
+  if (
+    existing &&
+    (
+      previousDisplayName !== participant.actor.displayName ||
+      previousUsernameHandle !== participant.actor.usernameHandle
+    )
+  ) {
+    recordIdentityEvent(ccb, {
+      type: "name_change",
+      actorId: sender.id,
+      oldDisplayName: previousDisplayName,
+      newDisplayName: participant.actor.displayName,
+      oldUsernameHandle: previousUsernameHandle,
+      newUsernameHandle: participant.actor.usernameHandle,
+      timestamp: message.timestamp,
+    });
+  }
+
+  moveParticipantDisplayNameIndex(
+    ccb,
+    sender.id,
+    previousDisplayName,
+    participant.actor.displayName,
+    message.timestamp,
+  );
+}
+
+function collectActorIdsFromMessage(message: TelegramMessage, actorIds: Set<string>): void {
+  const sender = buildSenderActorRef(message);
+  if (sender && isKnownActorId(sender.id)) {
+    actorIds.add(sender.id);
+  }
+  const replyToSender = buildReplyActorRef(message);
+  if (replyToSender && isKnownActorId(replyToSender.id)) {
+    actorIds.add(replyToSender.id);
+  }
+  for (const mentionedActor of buildMentionActorRefs(message)) {
+    if (isKnownActorId(mentionedActor.id)) {
+      actorIds.add(mentionedActor.id);
+    }
+  }
+}
+
+function buildContextAnchorSnapshot(
+  ccb: ChatControlBlock,
+  node: MessageNode,
+  recentMessages: TelegramMessage[],
+  sessionMessages: TelegramMessage[],
+): ContextAnchorSnapshot {
+  const relevantMessages = [node.message, ...recentMessages, ...sessionMessages];
+  const relevantActorIds = new Set<string>();
+  for (const message of relevantMessages) {
+    collectActorIdsFromMessage(message, relevantActorIds);
+  }
+  const resolvedTargets = collectResolvedTargetsForContext(ccb, node.message, node.timestamp);
+  for (const target of resolvedTargets) {
+    if (isKnownActorId(target.actorId)) {
+      relevantActorIds.add(target.actorId.trim());
+    }
+  }
+  const participants = Array.from(relevantActorIds)
+    .map((actorId) => ccb.participantsById.get(actorId) ?? null)
+    .filter((participant): participant is ParticipantState => Boolean(participant))
+    .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+    .slice(0, CONTEXT_PARTICIPANT_LIMIT)
+    .map((participant) => ({
+      ...participant,
+      actor: { ...participant.actor },
+      recentMessageIds: participant.recentMessageIds.slice(),
+      displayNameHistory: participant.displayNameHistory.slice(),
+      usernameHistory: participant.usernameHistory.slice(),
+    }));
+  const participantIds = new Set(participants.map((participant) => participant.actor.id));
+  const identityEvents = ccb.identityEvents
+    .filter((event) => {
+      if (event.type === "name_change") {
+        return participantIds.has(event.actorId);
+      }
+      return event.actorIds.some((actorId) => participantIds.has(actorId));
+    })
+    .slice(-CONTEXT_IDENTITY_EVENT_LIMIT);
+  return {
+    recentMessages,
+    sessionMessages,
+    participants,
+    identityEvents,
+    resolvedTargets,
+  };
 }
 
 function pruneExpiredUsernameAliases(ccb: ChatControlBlock, now: number): void {
@@ -485,28 +791,111 @@ function resolveUserIdByUsernameHandle(
   return binding.userId;
 }
 
-function collectExplicitRecallSpeakerIds(
+function collectExplicitResolvedTargets(
   ccb: ChatControlBlock,
   message: TelegramMessage,
   now: number,
-): string[] {
-  const out: string[] = [];
-  const push = (value: string | null | undefined) => {
-    const normalized = (value ?? "").trim();
-    if (!normalized || out.includes(normalized)) {
+): ResolvedTarget[] {
+  const out: ResolvedTarget[] = [];
+  const seen = new Set<string>();
+  const push = (target: ResolvedTarget) => {
+    const key = `${target.via}:${target.actorId ?? target.usernameHandle ?? target.displayName ?? "unknown"}`;
+    if (seen.has(key)) {
       return;
     }
-    out.push(normalized);
+    seen.add(key);
+    out.push(target);
   };
 
-  push(message.metadata.replyToUserId);
-  for (const mentionUserId of message.metadata.mentionUserIds ?? []) {
-    push(mentionUserId);
+  const replyToSender = mergeActorRef(
+    buildReplyActorRef(message),
+    resolveKnownParticipantActor(ccb, message.metadata.replyToUserId),
+  );
+  if (replyToSender) {
+    push({
+      actorId: isKnownActorId(replyToSender.id) ? replyToSender.id : null,
+      entityType: replyToSender.entityType,
+      displayName: replyToSender.displayName,
+      usernameHandle: replyToSender.usernameHandle,
+      via: "reply",
+    });
   }
+
+  for (const mentionUserId of message.metadata.mentionUserIds ?? []) {
+    const actor = mergeActorRef(
+      resolveKnownParticipantActor(ccb, mentionUserId),
+      createActorRef({
+        id: mentionUserId,
+        entityType: inferSenderEntityTypeFromId(mentionUserId),
+      }),
+    );
+    if (!actor) {
+      continue;
+    }
+    push({
+      actorId: actor.id,
+      entityType: actor.entityType,
+      displayName: actor.displayName,
+      usernameHandle: actor.usernameHandle,
+      via: "mention_user",
+    });
+  }
+
   for (const mentionHandle of message.metadata.mentions ?? []) {
-    push(resolveUserIdByUsernameHandle(ccb, mentionHandle, now));
+    const normalizedHandle = normalizeUsernameHandle(mentionHandle);
+    if (!normalizedHandle) {
+      continue;
+    }
+    const actorId = resolveUserIdByUsernameHandle(ccb, normalizedHandle, now);
+    const actor = mergeActorRef(
+      resolveKnownParticipantActor(ccb, actorId),
+      createActorRef({
+        id: actorId ?? "unknown",
+        entityType: inferSenderEntityTypeFromId(actorId),
+        usernameHandle: normalizedHandle,
+      }),
+    );
+    if (!actor) {
+      continue;
+    }
+    push({
+      actorId: isKnownActorId(actor.id) ? actor.id : null,
+      entityType: actor.entityType,
+      displayName: actor.displayName,
+      usernameHandle: actor.usernameHandle ?? normalizedHandle,
+      via: "mention_handle",
+    });
   }
   return out;
+}
+
+function collectKnownTargetActorIds(targets: ResolvedTarget[]): string[] {
+  return targets
+    .map((target) => target.actorId)
+    .filter((actorId): actorId is string => isKnownActorId(actorId));
+}
+
+function collectResolvedTargetsForContext(
+  ccb: ChatControlBlock,
+  message: TelegramMessage,
+  now: number,
+): ResolvedTarget[] {
+  const explicitTargets = collectExplicitResolvedTargets(ccb, message, now);
+  if (explicitTargets.length > 0) {
+    return explicitTargets;
+  }
+  const inferred = inferTargetActorIdFromPronoun(ccb, message, now);
+  if (!inferred) {
+    return [];
+  }
+  const actor = resolveKnownParticipantActor(ccb, inferred);
+  return [{
+    actorId: inferred,
+    entityType: actor?.entityType ?? inferSenderEntityTypeFromId(inferred),
+    displayName: actor?.displayName ?? null,
+    usernameHandle: actor?.usernameHandle ?? null,
+    via: "pronoun",
+  }];
 }
 
 function hasPronounReference(text: string): boolean {
@@ -520,7 +909,7 @@ function hasPronounReference(text: string): boolean {
   );
 }
 
-function inferTargetSpeakerIdFromPronoun(
+function inferTargetActorIdFromPronoun(
   ccb: ChatControlBlock,
   message: TelegramMessage,
   now: number,
@@ -533,7 +922,9 @@ function inferTargetSpeakerIdFromPronoun(
     .sort((a, b) => b.timestamp - a.timestamp)
     .slice(0, PRONOUN_REFERENCE_WINDOW_MESSAGES);
   for (const node of candidates) {
-    const explicitTargets = collectExplicitRecallSpeakerIds(ccb, node.message, now);
+    const explicitTargets = collectKnownTargetActorIds(
+      collectExplicitResolvedTargets(ccb, node.message, now),
+    );
     if (explicitTargets.length > 0) {
       return explicitTargets[explicitTargets.length - 1] ?? null;
     }
@@ -541,29 +932,31 @@ function inferTargetSpeakerIdFromPronoun(
   return null;
 }
 
-function resolveRecallTargetSpeakerIds(
+function resolveRecallTargetActorIds(
   ccb: ChatControlBlock,
   message: TelegramMessage,
   now: number,
-  explicitTargets = collectExplicitRecallSpeakerIds(ccb, message, now),
-): { targetSpeakerIds: string[]; reason: "explicit" | "pronoun" | "self" } {
+  explicitTargets = collectKnownTargetActorIds(
+    collectExplicitResolvedTargets(ccb, message, now),
+  ),
+): { targetActorIds: string[]; reason: "explicit" | "pronoun" | "self" } {
   if (explicitTargets.length > 0) {
     return {
-      targetSpeakerIds: explicitTargets,
+      targetActorIds: explicitTargets,
       reason: "explicit",
     };
   }
 
-  const inferred = inferTargetSpeakerIdFromPronoun(ccb, message, now);
+  const inferred = inferTargetActorIdFromPronoun(ccb, message, now);
   if (inferred) {
     return {
-      targetSpeakerIds: [inferred],
+      targetActorIds: [inferred],
       reason: "pronoun",
     };
   }
 
   return {
-    targetSpeakerIds: [message.userId],
+    targetActorIds: [message.userId],
     reason: "self",
   };
 }
@@ -571,12 +964,12 @@ function resolveRecallTargetSpeakerIds(
 function shouldAllowGroupWideSemanticRecall(
   message: TelegramMessage,
   recallReason: "explicit" | "pronoun" | "self",
-  explicitTargetSpeakerIds: string[],
+  explicitTargetActorIds: string[],
 ): boolean {
   if (message.metadata.replyToMessageId !== null) {
     return false;
   }
-  if (explicitTargetSpeakerIds.length > 0) {
+  if (explicitTargetActorIds.length > 0) {
     return false;
   }
   if (recallReason !== "self") {
@@ -936,12 +1329,13 @@ function recallSession(ccb: ChatControlBlock, searchResult: SearchResult, now: n
     if (!recalledMessage) {
       continue;
     }
+    const materializedMessage = materializeMessageActors(ccb, recalledMessage, now);
     const fallbackVector = storedMessage.vector.length > 0 ? storedMessage.vector.slice() : session.centerVector.slice();
     const recalledNode: MessageNode = {
-      message: recalledMessage,
-      messageId: recalledMessage.messageId,
-      timestamp: recalledMessage.timestamp,
-      replyToId: recalledMessage.metadata.replyToMessageId,
+      message: materializedMessage,
+      messageId: materializedMessage.messageId,
+      timestamp: materializedMessage.timestamp,
+      replyToId: materializedMessage.metadata.replyToMessageId,
       childrenIds: [],
       sessionId: session.sessionId,
       vector: fallbackVector,
@@ -959,6 +1353,7 @@ function recallSession(ccb: ChatControlBlock, searchResult: SearchResult, now: n
     ccb.messageNodes.set(recalledNode.messageId, recalledNode);
     session.messageIds.add(recalledNode.messageId);
     refreshUsernameAlias(ccb, recalledNode.message, recalledNode.timestamp);
+    upsertParticipantState(ccb, recalledNode.message, { incrementMessageCount: false });
   }
   for (const recalledNode of recalledNodes) {
     const parentId = recalledNode.replyToId;

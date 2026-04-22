@@ -1,9 +1,12 @@
-// export type MessageNodeInput = {
-//   metadata: { isBot: boolean; username: string | null };
-//   timestamp: number;
-//   context: string;
-// };
-import type { TelegramMessage } from "../types/message";
+import type { ContextIdentityEvent, ParticipantState, ResolvedTarget } from "../gateway/context/core/types";
+import type { ActorRef, TelegramMessage } from "../types/message";
+import {
+  buildReplyActorRef,
+  buildSenderActorRef,
+  createActorRef,
+  inferSenderEntityTypeFromId,
+  normalizeUsernameHandle,
+} from "./actor";
 
 export function formatNormalMessageNode(message: TelegramMessage, replyToMessage?: TelegramMessage): string {
   const messageTemplate = buildMessageAttributes(message);
@@ -24,42 +27,110 @@ export function formatNormalMessageNode(message: TelegramMessage, replyToMessage
 }
 
 export function formatReplyToPreviewNode(message: TelegramMessage): string {
-  const attrs = buildReplyPreviewAttributes({
-    senderId: getSenderId(message),
+  const actor = buildReplyActorRef({
+    ...message,
+    metadata: {
+      ...message.metadata,
+      replyToSender: buildSenderActorRef(message) ?? undefined,
+      replyToUserId: getSenderId(message),
+      replyToUsername: getDisplayName(message),
+    },
+  }) ?? buildSenderActorRef(message);
+  const attrs = buildActorAttributes(actor, {
     speaker: getSpeaker(message),
-    senderHandle: getSenderHandle(message),
+    senderId: getSenderId(message),
   });
-  return `<reply_to_preview ${attrs}>${escapeXml(message.context)}</reply_to_preview>`;
+  return `<reply_to_preview ${attrs.join(" ")}>${escapeXml(message.context)}</reply_to_preview>`;
 }
 
 export function formatFallbackReplyToPreviewNode(message: TelegramMessage): string {
-  const fallbackSpeaker =
-    (message.metadata.replyToUsername ?? "").trim() ||
-    (message.metadata.replyToUserId ?? "").trim() ||
-    "unknown";
   const fallbackText =
     (message.metadata.replyToPreviewText ?? "").trim() ||
     `unavailable (reply_to=${message.metadata.replyToMessageId})`;
-  const fallbackHandle = normalizeHandle(message.metadata.replyToUsername);
-  const attrs = buildReplyPreviewAttributes({
-    senderId: (message.metadata.replyToUserId ?? "").trim() || "unknown",
-    speaker: fallbackSpeaker,
-    senderHandle: fallbackHandle,
+  const fallbackActor = buildReplyActorRef(message) ?? createActorRef({
+    id: (message.metadata.replyToUserId ?? "").trim() || "unknown",
+    entityType: inferSenderEntityTypeFromId(message.metadata.replyToUserId),
+    displayName: message.metadata.replyToUsername,
+    usernameHandle: normalizeUsernameHandle(message.metadata.replyToUsername),
   });
-  return `<reply_to_preview ${attrs}>${escapeXml(fallbackText)}</reply_to_preview>`;
+  const attrs = buildActorAttributes(fallbackActor, {
+    speaker:
+      (message.metadata.replyToUsername ?? "").trim() ||
+      (message.metadata.replyToUserId ?? "").trim() ||
+      "unknown",
+    senderId: (message.metadata.replyToUserId ?? "").trim() || "unknown",
+  });
+  return `<reply_to_preview ${attrs.join(" ")}>${escapeXml(fallbackText)}</reply_to_preview>`;
+}
+
+export function formatParticipantNode(participant: ParticipantState): string {
+  const attrs = buildActorAttributes(participant.actor, {
+    speaker: participant.actor.displayName ?? participant.actor.usernameHandle ?? participant.actor.id,
+    senderId: participant.actor.id,
+  });
+  attrs.push(`first_seen="${formatTimestampUtc8(participant.firstSeenAt)}"`);
+  attrs.push(`last_seen="${formatTimestampUtc8(participant.lastSeenAt)}"`);
+  attrs.push(`message_count="${participant.messageCount}"`);
+  if (participant.hasDisplayNameConflict) {
+    attrs.push('name_conflict="true"');
+  }
+  if (participant.displayNameHistory.length > 0) {
+    attrs.push(`display_name_history="${escapeXml(participant.displayNameHistory.join(" | "))}"`);
+  }
+  if (participant.usernameHistory.length > 0) {
+    attrs.push(`username_history="${escapeXml(participant.usernameHistory.join(" | "))}"`);
+  }
+  return `<participant ${attrs.join(" ")} />`;
+}
+
+export function formatIdentityEventNode(event: ContextIdentityEvent): string {
+  if (event.type === "name_change") {
+    const parts = [
+      'type="name_change"',
+      `sender_id="${escapeXml(event.actorId)}"`,
+      `timestamp="${formatTimestampUtc8(event.timestamp)}"`,
+    ];
+    addOptionalAttribute(parts, "old_display_name", event.oldDisplayName);
+    addOptionalAttribute(parts, "new_display_name", event.newDisplayName);
+    addOptionalAttribute(parts, "old_sender_handle", event.oldUsernameHandle);
+    addOptionalAttribute(parts, "new_sender_handle", event.newUsernameHandle);
+    return `<identity_event ${parts.join(" ")} />`;
+  }
+  const parts = [
+    'type="display_name_conflict"',
+    `display_name="${escapeXml(event.displayName)}"`,
+    `actor_ids="${escapeXml(event.actorIds.join(","))}"`,
+    `timestamp="${formatTimestampUtc8(event.timestamp)}"`,
+  ];
+  return `<identity_event ${parts.join(" ")} />`;
+}
+
+export function formatResolvedTargetNode(target: ResolvedTarget): string {
+  const actor = createActorRef({
+    id: target.actorId ?? "unknown",
+    entityType: target.entityType,
+    displayName: target.displayName,
+    usernameHandle: target.usernameHandle,
+  });
+  const attrs = buildActorAttributes(actor, {
+    speaker: target.displayName ?? target.usernameHandle ?? target.actorId ?? "unknown",
+    senderId: target.actorId ?? "unknown",
+  });
+  attrs.push(`via="${escapeXml(target.via)}"`);
+  return `<target ${attrs.join(" ")} />`;
 }
 
 export function getSpeaker(message: {
-  metadata: { username: string | null; usernameHandle?: string | null };
+  sender?: ActorRef;
+  metadata: { username: string | null; usernameHandle?: string | null; senderEntityType?: string | null };
   userId?: string;
 }): string {
-  const username = (message.metadata.username ?? "").trim();
-  if (username) {
-    return username;
+  const sender = buildSenderActorRef(message as TelegramMessage);
+  if (sender?.displayName) {
+    return sender.displayName;
   }
-  const handle = (message.metadata.usernameHandle ?? "").trim();
-  if (handle) {
-    return handle;
+  if (sender?.usernameHandle) {
+    return sender.usernameHandle;
   }
   const userId = (message.userId ?? "").trim();
   if (userId && userId !== "unknown") {
@@ -68,15 +139,31 @@ export function getSpeaker(message: {
   return "unknown";
 }
 
-export function getSenderId(message: { userId?: string | null }): string {
-  const userId = (message.userId ?? "").trim();
-  return userId || "unknown";
+export function getDisplayName(message: TelegramMessage): string {
+  return buildSenderActorRef(message)?.displayName ?? getSpeaker(message);
+}
+
+export function getSenderId(message: { userId?: string | null; sender?: ActorRef | null }): string {
+  const senderId = (message.sender?.id ?? message.userId ?? "").trim();
+  return senderId || "unknown";
+}
+
+export function getSenderEntityType(message: {
+  userId?: string | null;
+  sender?: ActorRef | null;
+  metadata?: { senderEntityType?: string | null } | null;
+}): string {
+  return (
+    message.sender?.entityType ??
+    inferSenderEntityTypeFromId(message.userId, (message.metadata?.senderEntityType as ActorRef["entityType"] | undefined) ?? "unknown")
+  );
 }
 
 export function getSenderHandle(message: {
+  sender?: ActorRef | null;
   metadata?: { usernameHandle?: string | null } | null;
 }): string | null {
-  return normalizeHandle(message.metadata?.usernameHandle);
+  return normalizeUsernameHandle(message.sender?.usernameHandle ?? message.metadata?.usernameHandle);
 }
 
 export function formatTimestampUtc8(timestamp: number): string {
@@ -93,41 +180,42 @@ export function escapeXml(input: string): string {
 }
 
 function buildMessageAttributes(message: TelegramMessage): string {
-  const parts = [
-    `id="${message.messageId}"`,
-    `sender_id="${escapeXml(getSenderId(message))}"`,
-    `speaker="${escapeXml(getSpeaker(message))}"`,
-  ];
-  const senderHandle = getSenderHandle(message);
-  if (senderHandle) {
-    parts.push(`sender_handle="${escapeXml(senderHandle)}"`);
-  }
-  parts.push(`timestamp="${formatTimestampUtc8(message.timestamp)}"`);
+  const attrs = buildActorAttributes(buildSenderActorRef(message), {
+    senderId: getSenderId(message),
+    speaker: getSpeaker(message),
+  });
+  attrs.unshift(`id="${message.messageId}"`);
+  attrs.push(`timestamp="${formatTimestampUtc8(message.timestamp)}"`);
   if (message.metadata.replyToMessageId) {
-    parts.push(`reply_to="${message.metadata.replyToMessageId}"`);
+    attrs.push(`reply_to="${message.metadata.replyToMessageId}"`);
   }
-  return parts.join(" ");
+  return attrs.join(" ");
 }
 
-function buildReplyPreviewAttributes(input: {
-  senderId: string;
-  speaker: string;
-  senderHandle?: string | null;
-}): string {
+function buildActorAttributes(
+  actor: ActorRef | null,
+  fallback: { senderId: string; speaker: string },
+): string[] {
+  const senderId = actor?.id ?? fallback.senderId ?? "unknown";
+  const speaker = actor?.displayName ?? fallback.speaker ?? "unknown";
   const parts = [
-    `sender_id="${escapeXml(input.senderId || "unknown")}"`,
-    `speaker="${escapeXml(input.speaker || "unknown")}"`,
+    `sender_id="${escapeXml(senderId)}"`,
+    `sender_entity_type="${escapeXml(actor?.entityType ?? inferSenderEntityTypeFromId(senderId))}"`,
+    `speaker="${escapeXml(speaker)}"`,
   ];
-  if (input.senderHandle) {
-    parts.push(`sender_handle="${escapeXml(input.senderHandle)}"`);
+  addOptionalAttribute(parts, "display_name", actor?.displayName ?? null);
+  addOptionalAttribute(parts, "username", actor?.username ?? null);
+  addOptionalAttribute(parts, "sender_handle", actor?.usernameHandle ?? null);
+  if (actor?.isBot) {
+    parts.push('is_bot="true"');
   }
-  return parts.join(" ");
+  return parts;
 }
 
-function normalizeHandle(value: string | null | undefined): string | null {
-  const trimmed = (value ?? "").trim();
-  if (!trimmed) {
-    return null;
+function addOptionalAttribute(parts: string[], name: string, value: string | null | undefined): void {
+  const normalized = (value ?? "").trim();
+  if (!normalized) {
+    return;
   }
-  return trimmed.startsWith("@") ? trimmed : null;
+  parts.push(`${name}="${escapeXml(normalized)}"`);
 }

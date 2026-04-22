@@ -298,7 +298,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
     triggerMessage: TelegramMessage,
     sendMessageMode: SendMessageMode,
   ): Promise<LLMMessage[]> => {
-    const [recentMessages, sessionMessages] = contextStore.getContextByAnchor({
+    const contextSnapshot = contextStore.getContextByAnchor({
       chatId: triggerMessage.chatId,
       messageId: triggerMessage.messageId,
     });
@@ -311,8 +311,11 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
     );
 
     return contextAssembler.build({
-      contextMessages: sessionMessages,
-      recentMessages,
+      contextMessages: contextSnapshot.sessionMessages,
+      recentMessages: contextSnapshot.recentMessages,
+      participants: contextSnapshot.participants,
+      identityEvents: contextSnapshot.identityEvents,
+      resolvedTargets: contextSnapshot.resolvedTargets,
       triggerMessage,
       systemPrompt,
     });

@@ -5,7 +5,7 @@ export {
 export {
   type ContextAssembler,
   type ContextAssemblerBuildInput,
-  type ContextMessagesPair,
+  type ContextAnchorSnapshot,
   type ContextStore,
 } from "./core/types";
 export { createContextAssembler } from "./assembler";

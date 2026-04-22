@@ -13,13 +13,13 @@ export interface ContextSearcher {
     chatId: number;
     query: string;
     limit?: number;
-    speakerId?: string | null;
-    targetSpeakerIds?: string[];
+    actorId?: string | null;
+    targetActorIds?: string[];
   }) => Promise<SearchResult[]>;
 }
 
 export interface CreateContextSearcherOptions {
-  vfsClient?: Pick<MemoryVfsClient, "search"> & Partial<Pick<MemoryVfsClient, "searchSemanticBySpeaker">>;
+  vfsClient?: Pick<MemoryVfsClient, "search"> & Partial<Pick<MemoryVfsClient, "searchSemanticByActor" | "searchSemanticBySpeaker">>;
   defaultSemanticLimit?: number;
 }
 
@@ -42,26 +42,38 @@ export function createContextSearcher(options: CreateContextSearcherOptions = {}
       });
       return response.results[0] ?? null;
     },
-    searchSemantic: async ({ chatId, query, limit, speakerId, targetSpeakerIds }) => {
+    searchSemantic: async ({ chatId, query, limit, actorId, targetActorIds }) => {
       const normalizedQuery = query.trim();
       if (!normalizedQuery) {
         return [];
       }
       const normalizedLimit = limit && limit > 0 ? Math.floor(limit) : defaultSemanticLimit;
-      const speakers = normalizeSpeakerIds(targetSpeakerIds, speakerId);
-      if (speakers.length > 0) {
-        if (typeof vfsClient.searchSemanticBySpeaker !== "function") {
+      const actorIds = normalizeActorIds(targetActorIds, actorId);
+      if (actorIds.length > 0) {
+        const searchByActor =
+          typeof vfsClient.searchSemanticByActor === "function"
+            ? vfsClient.searchSemanticByActor.bind(vfsClient)
+            : typeof vfsClient.searchSemanticBySpeaker === "function"
+              ? async (input: { chatId: string; actorId: string; query: string; limit?: number }) =>
+                vfsClient.searchSemanticBySpeaker!({
+                  chatId: input.chatId,
+                  speaker: input.actorId,
+                  query: input.query,
+                  limit: input.limit,
+                })
+              : null;
+        if (!searchByActor) {
           return [];
         }
         const scopedResults: SearchResult[] = [];
-        for (const speaker of speakers) {
-          const speakerResponse = await vfsClient.searchSemanticBySpeaker({
+        for (const targetActorId of actorIds) {
+          const actorResponse = await searchByActor({
             chatId: String(chatId),
-            speaker,
+            actorId: targetActorId,
             query: normalizedQuery,
             limit: normalizedLimit,
           });
-          scopedResults.push(...speakerResponse.results);
+          scopedResults.push(...actorResponse.results);
         }
         return mergeSearchResults(scopedResults, normalizedLimit);
       }
@@ -92,7 +104,7 @@ function mergeSearchResults(results: SearchResult[], limit: number): SearchResul
     .slice(0, Math.max(1, limit));
 }
 
-function normalizeSpeakerIds(targetSpeakerIds?: string[], speakerId?: string | null): string[] {
+function normalizeActorIds(targetActorIds?: string[], actorId?: string | null): string[] {
   const out: string[] = [];
   const push = (value: string | null | undefined) => {
     const normalized = (value ?? "").trim();
@@ -102,9 +114,9 @@ function normalizeSpeakerIds(targetSpeakerIds?: string[], speakerId?: string | n
     out.push(normalized);
   };
 
-  for (const item of targetSpeakerIds ?? []) {
+  for (const item of targetActorIds ?? []) {
     push(item);
   }
-  push(speakerId);
+  push(actorId);
   return out;
 }

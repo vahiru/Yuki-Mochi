@@ -32,7 +32,13 @@ const stubEnclaveClient: AgentEnclaveClient = {
 
 const stubContextStore: ContextStore = {
   ingestMessage: async () => {},
-  getContextByAnchor: () => [[], []],
+  getContextByAnchor: () => ({
+    recentMessages: [],
+    sessionMessages: [],
+    participants: [],
+    identityEvents: [],
+    resolvedTargets: [],
+  }),
   debugPrintSessionControlBlocks: () => {},
 };
 

@@ -15,6 +15,7 @@ import { basename, extname } from "node:path";
 import { createCustomEmojiToTextResolver } from "./custom-emoji-to-text";
 import { createImageAltTextStore } from "./image-to-text-store";
 import type { CustomEmojiToTextConfig } from "./index";
+import { hydrateMessageActors } from "../utils/actor";
 
 const DEFAULT_FINAL_TEXT = "(empty)";
 const DEFAULT_STREAM_PLACEHOLDER = "Working on it... estimated 30-90 seconds.";
@@ -594,7 +595,7 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
 
     console.log(`[userbot] Ingested: from=${userId} (${senderName}) chat=${chatId} text="${text.slice(0, 20)}..." photo=${photoCount} mention=${isMentionMe} reply=${isReplyToMe} replyTo=${replyToMsgId === null ? "-" : replyToMsgId}`);
 
-    return {
+    return hydrateMessageActors({
       userId, messageId: msg.id, chatId, conversationType, 
       context: renderedContext + photoPlaceholder,
       timestamp: (msg.date || Math.floor(Date.now() / 1000)) * 1000,
@@ -614,7 +615,7 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
         mentions: mentionExtraction.mentions,
         mentionUserIds: mentionExtraction.mentionUserIds,
       }
-    };
+    });
   };
 
   const renderStreamPreview = (state: StreamState): string => {
