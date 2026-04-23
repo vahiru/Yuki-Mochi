@@ -711,12 +711,14 @@ function buildContextAnchorSnapshot(
   recentMessages: TelegramMessage[],
   sessionMessages: TelegramMessage[],
 ): ContextAnchorSnapshot {
-  const relevantMessages = [node.message, ...recentMessages, ...sessionMessages];
+  const resolvedTargets = collectResolvedTargetsForContext(ccb, node.message, node.timestamp);
+  const focusedRecentMessages = focusMessagesByResolvedTargets(recentMessages, resolvedTargets);
+  const focusedSessionMessages = focusMessagesByResolvedTargets(sessionMessages, resolvedTargets);
+  const relevantMessages = [node.message, ...focusedRecentMessages, ...focusedSessionMessages];
   const relevantActorIds = new Set<string>();
   for (const message of relevantMessages) {
     collectActorIdsFromMessage(message, relevantActorIds);
   }
-  const resolvedTargets = collectResolvedTargetsForContext(ccb, node.message, node.timestamp);
   const targetMessages = collectTargetActorMessages(
     ccb,
     node.message,
@@ -749,8 +751,8 @@ function buildContextAnchorSnapshot(
     })
     .slice(-CONTEXT_IDENTITY_EVENT_LIMIT);
   return {
-    recentMessages,
-    sessionMessages,
+    recentMessages: focusedRecentMessages,
+    sessionMessages: focusedSessionMessages,
     targetMessages,
     participants,
     identityEvents,
@@ -901,6 +903,18 @@ function collectTargetActorMessages(
     .slice(0, TARGET_ACTOR_MESSAGE_LIMIT)
     .map((node) => node.message)
     .reverse();
+}
+
+function focusMessagesByResolvedTargets(
+  messages: TelegramMessage[],
+  resolvedTargets: ResolvedTarget[],
+): TelegramMessage[] {
+  const targetActorIds = new Set(collectKnownTargetActorIds(resolvedTargets));
+  if (targetActorIds.size === 0) {
+    return messages;
+  }
+  const focused = messages.filter((message) => targetActorIds.has(message.userId));
+  return focused.length > 0 ? focused : messages;
 }
 
 function buildDisplayNameAliasIndex(ccb: ChatControlBlock): Map<string, Set<string>> {
