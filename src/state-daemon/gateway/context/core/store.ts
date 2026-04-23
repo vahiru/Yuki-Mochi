@@ -78,6 +78,7 @@ const PARTICIPANT_HISTORY_LIMIT = 5;
 const IDENTITY_EVENT_HISTORY_LIMIT = 64;
 const CONTEXT_PARTICIPANT_LIMIT = 12;
 const CONTEXT_IDENTITY_EVENT_LIMIT = 12;
+const TARGET_ACTOR_MESSAGE_LIMIT = 6;
 
 export function createInMemoryContextStore(
   options: CreateInMemoryContextStoreOptions = {}
@@ -213,11 +214,16 @@ export function createInMemoryContextStore(
             now,
             explicitTargetActorIds,
           );
+          const targetScopedQuery = buildTargetScopedRecallQuery(
+            ccb,
+            materializedMessage,
+            semanticResolution.targetActorIds,
+          );
           const targetScopedResults = semanticResolution.targetActorIds.length > 0
             ? filterSearchResultsByScore(
               await contextSearcher.searchSemantic({
                 chatId,
-                query: materializedMessage.context,
+                query: targetScopedQuery,
                 limit: RECALL_RESULT_LIMIT,
                 targetActorIds: semanticResolution.targetActorIds,
               }),
@@ -464,6 +470,7 @@ function createEmptyContextAnchorSnapshot(): ContextAnchorSnapshot {
   return {
     recentMessages: [],
     sessionMessages: [],
+    targetMessages: [],
     participants: [],
     identityEvents: [],
     resolvedTargets: [],
@@ -710,6 +717,11 @@ function buildContextAnchorSnapshot(
     collectActorIdsFromMessage(message, relevantActorIds);
   }
   const resolvedTargets = collectResolvedTargetsForContext(ccb, node.message, node.timestamp);
+  const targetMessages = collectTargetActorMessages(
+    ccb,
+    node.message,
+    resolvedTargets,
+  );
   for (const target of resolvedTargets) {
     if (isKnownActorId(target.actorId)) {
       relevantActorIds.add(target.actorId.trim());
@@ -739,6 +751,7 @@ function buildContextAnchorSnapshot(
   return {
     recentMessages,
     sessionMessages,
+    targetMessages,
     participants,
     identityEvents,
     resolvedTargets,
@@ -871,6 +884,25 @@ function collectKnownTargetActorIds(targets: ResolvedTarget[]): string[] {
     .filter((actorId): actorId is string => isKnownActorId(actorId));
 }
 
+function collectTargetActorMessages(
+  ccb: ChatControlBlock,
+  triggerMessage: TelegramMessage,
+  resolvedTargets: ResolvedTarget[],
+): TelegramMessage[] {
+  const targetActorIds = new Set(collectKnownTargetActorIds(resolvedTargets));
+  if (targetActorIds.size === 0) {
+    return [];
+  }
+
+  return Array.from(ccb.messageNodes.values())
+    .filter((node) => node.messageId !== triggerMessage.messageId)
+    .filter((node) => targetActorIds.has(node.message.userId))
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(0, TARGET_ACTOR_MESSAGE_LIMIT)
+    .map((node) => node.message)
+    .reverse();
+}
+
 function buildDisplayNameAliasIndex(ccb: ChatControlBlock): Map<string, Set<string>> {
   const aliasToActorIds = new Map<string, Set<string>>();
   for (const participant of ccb.participantsById.values()) {
@@ -909,6 +941,79 @@ function containsDisplayNameReference(text: string, displayNameKey: string): boo
     return new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`).test(text);
   }
   return text.includes(displayNameKey);
+}
+
+function stripLeadingVocative(text: string, isMentionMe: boolean): string {
+  if (!isMentionMe) {
+    return text;
+  }
+  const trimmed = text.trim();
+  return trimmed.replace(/^[^,，:：]{1,64}[,，:：]\s*/u, "");
+}
+
+function collectTargetActorAliases(ccb: ChatControlBlock, targetActorIds: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const actorId of targetActorIds) {
+    const participant = ccb.participantsById.get(actorId);
+    if (!participant) {
+      continue;
+    }
+    const aliases = [
+      participant.actor.displayName,
+      participant.actor.usernameHandle,
+      ...participant.displayNameHistory,
+      ...participant.usernameHistory,
+    ];
+    for (const alias of aliases) {
+      const normalized = (alias ?? "").trim();
+      if (!normalized) {
+        continue;
+      }
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      out.push(normalized);
+    }
+  }
+  return out.sort((a, b) => b.length - a.length);
+}
+
+function stripAliasOccurrences(text: string, alias: string): string {
+  if (!alias) {
+    return text;
+  }
+  const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (/^[a-z0-9_@.\- ]+$/i.test(alias)) {
+    return text.replace(new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}([^\\p{L}\\p{N}_]|$)`, "giu"), "$1$2");
+  }
+  return text.split(alias).join(" ");
+}
+
+function normalizeRecallQueryText(text: string): string {
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/^[,，:：\s]+/u, "")
+    .replace(/[,，:：\s]+$/u, "")
+    .trim();
+}
+
+function buildTargetScopedRecallQuery(
+  ccb: ChatControlBlock,
+  message: TelegramMessage,
+  targetActorIds: string[],
+): string {
+  if (targetActorIds.length === 0) {
+    return message.context;
+  }
+  let query = stripLeadingVocative(message.context, message.metadata.isMentionMe);
+  for (const alias of collectTargetActorAliases(ccb, targetActorIds)) {
+    query = stripAliasOccurrences(query, alias);
+  }
+  query = normalizeRecallQueryText(query);
+  return query || message.context;
 }
 
 function collectDisplayNameResolvedTargets(

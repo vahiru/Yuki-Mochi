@@ -18,9 +18,13 @@ import type { TelegramMessage } from "../../types/message";
 
 export function createContextAssembler(): ContextAssembler {
   return {
-    build: ({ contextMessages, recentMessages, triggerMessage, participants, identityEvents, resolvedTargets, systemPrompt }) => {
+    build: ({ contextMessages, recentMessages, targetMessages, triggerMessage, participants, identityEvents, resolvedTargets, systemPrompt }) => {
       const triggerId = triggerMessage.messageId;
       const normalizedRecent = recentMessages
+        .filter((item) => item.messageId !== triggerId)
+        .slice()
+        .sort((a, b) => a.timestamp - b.timestamp);
+      const normalizedTargetMessages = targetMessages
         .filter((item) => item.messageId !== triggerId)
         .slice()
         .sort((a, b) => a.timestamp - b.timestamp);
@@ -30,6 +34,9 @@ export function createContextAssembler(): ContextAssembler {
         .sort((a, b) => a.timestamp - b.timestamp);
       const messageIndex = new Map<number, TelegramMessage>();
       for (const message of normalizedRecent) {
+        messageIndex.set(message.messageId, message);
+      }
+      for (const message of normalizedTargetMessages) {
         messageIndex.set(message.messageId, message);
       }
       for (const message of normalizedContext) {
@@ -75,6 +82,10 @@ ${participantsXml}
   <identity_events>
 ${identityEventsXml}
   </identity_events>
+  <target_actor_messages>
+${normalizedTargetMessages.map((message) => formatNormalMessageNode(message,
+  findReplyTarget(message.metadata.replyToMessageId))).join("\n")}
+  </target_actor_messages>
   <recent_messages>
 ${normalizedRecent.map((message) => formatNormalMessageNode(message,
   findReplyTarget(message.metadata.replyToMessageId))).join("\n")}

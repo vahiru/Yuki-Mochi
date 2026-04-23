@@ -81,6 +81,7 @@ export interface ChatControlBlock {
 export interface ContextAnchorSnapshot {
   recentMessages: TelegramMessage[];
   sessionMessages: TelegramMessage[];
+  targetMessages: TelegramMessage[];
   participants: ParticipantState[];
   identityEvents: ContextIdentityEvent[];
   resolvedTargets: ResolvedTarget[];
@@ -102,6 +103,7 @@ export interface ContextAssemblerBuildInput {
   triggerMessage: TelegramMessage;
   contextMessages: TelegramMessage[];
   recentMessages: TelegramMessage[];
+  targetMessages: TelegramMessage[];
   participants: ParticipantState[];
   identityEvents: ContextIdentityEvent[];
   resolvedTargets: ResolvedTarget[];

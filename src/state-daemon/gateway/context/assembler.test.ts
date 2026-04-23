@@ -81,6 +81,7 @@ describe("createContextAssembler", () => {
       triggerMessage,
       contextMessages: [replyMessage],
       recentMessages: [],
+      targetMessages: [replyMessage],
       participants,
       identityEvents: [
         {
@@ -99,6 +100,7 @@ describe("createContextAssembler", () => {
 
     expect(result[1]?.content).toContain("<participants>");
     expect(result[1]?.content).toContain("<identity_events>");
+    expect(result[1]?.content).toContain("<target_actor_messages>");
     expect(result[1]?.content).toContain("<resolved_targets>");
     expect(result[1]?.content).toContain('sender_entity_type="user"');
     expect(result[1]?.content).toContain('via="reply"');

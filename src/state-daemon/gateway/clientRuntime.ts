@@ -313,6 +313,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
     return contextAssembler.build({
       contextMessages: contextSnapshot.sessionMessages,
       recentMessages: contextSnapshot.recentMessages,
+      targetMessages: contextSnapshot.targetMessages,
       participants: contextSnapshot.participants,
       identityEvents: contextSnapshot.identityEvents,
       resolvedTargets: contextSnapshot.resolvedTargets,

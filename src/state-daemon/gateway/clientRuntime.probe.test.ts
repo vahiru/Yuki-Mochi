@@ -35,6 +35,7 @@ const stubContextStore: ContextStore = {
   getContextByAnchor: () => ({
     recentMessages: [],
     sessionMessages: [],
+    targetMessages: [],
     participants: [],
     identityEvents: [],
     resolvedTargets: [],

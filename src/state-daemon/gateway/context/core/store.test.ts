@@ -98,6 +98,12 @@ describe("createInMemoryContextStore display-name targeting", () => {
         via: "display_name",
       }),
     ]);
+    expect(snapshot.targetMessages).toEqual([
+      expect.objectContaining({
+        userId: "user:a",
+        context: "我喜欢骑车",
+      }),
+    ]);
   });
 
   test("does not resolve ambiguous display-name references", async () => {
