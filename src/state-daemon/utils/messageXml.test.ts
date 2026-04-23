@@ -86,10 +86,25 @@ describe("formatNormalMessageNode", () => {
       replyToMessageId: 9,
       replyToUserId: "channel:777",
       replyToUsername: "@announcements",
+      replyToUsernameHandle: "@announcements",
       replyToPreviewText: "latest update",
     });
     const rendered = formatNormalMessageNode(message);
     expect(rendered).toContain('<reply_to_preview sender_id="channel:777" sender_entity_type="channel" speaker="@announcements" display_name="@announcements" username="announcements" sender_handle="@announcements">latest update</reply_to_preview>');
+  });
+
+  test("does not invent sender_handle for reply target without username", () => {
+    const message = createMessage({
+      replyToMessageId: 9,
+      replyToUserId: "2002",
+      replyToUsername: "玉米狐狸 | 啊米玉说的道理",
+      replyToUsernameHandle: null,
+      replyToPreviewText: "latest update",
+    });
+    const rendered = formatNormalMessageNode(message);
+    expect(rendered).toContain('sender_id="2002"');
+    expect(rendered).toContain('speaker="玉米狐狸 | 啊米玉说的道理"');
+    expect(rendered).not.toContain('sender_handle="@玉米狐狸 | 啊米玉说的道理"');
   });
 });
 

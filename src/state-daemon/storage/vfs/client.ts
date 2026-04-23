@@ -80,6 +80,7 @@ interface StoredMessageMeta {
   actorEntityType?: string;
   replyToUserId?: string;
   replyToUsername?: string;
+  replyToUsernameHandle?: string;
   replyToPreviewText?: string;
   replyToActorId?: string;
   replyToActorDisplayName?: string;
@@ -464,6 +465,7 @@ export class MemoryVfsClient {
               actorEntityType,
               replyToUserId: metadata.replyToUserId || "",
               replyToUsername: metadata.replyToUsername || "",
+              replyToUsernameHandle: metadata.replyToUsernameHandle || "",
               replyToPreviewText: metadata.replyToPreviewText || "",
               replyToActorId: metadata.replyToActorId || metadata.replyToUserId || "",
               replyToActorDisplayName: metadata.replyToActorDisplayName || metadata.replyToUsername || "",
@@ -612,6 +614,7 @@ function toChatMessage(row: MemorySearchRow, fallbackChatId: string): ChatMessag
     isMentionMe: meta.isMentionMe ?? false,
     mentions: parseMentions(row.mentions),
     replyToUsername: meta.replyToActorDisplayName ?? meta.replyToUsername ?? "",
+    replyToUsernameHandle: meta.replyToActorUsernameHandle ?? meta.replyToUsernameHandle ?? "",
     replyToPreviewText: meta.replyToPreviewText ?? "",
     mentionUserIds: meta.mentionedActorIds ?? meta.mentionUserIds ?? [],
     usernameHandle: meta.actorUsernameHandle ?? meta.usernameHandle ?? "",
@@ -665,6 +668,7 @@ function parseStoredMessageMeta(value: unknown): StoredMessageMeta {
     actorEntityType: typeof raw.actorEntityType === "string" ? raw.actorEntityType : undefined,
     replyToUserId: typeof raw.replyToUserId === "string" ? raw.replyToUserId : undefined,
     replyToUsername: typeof raw.replyToUsername === "string" ? raw.replyToUsername : undefined,
+    replyToUsernameHandle: typeof raw.replyToUsernameHandle === "string" ? raw.replyToUsernameHandle : undefined,
     replyToPreviewText: typeof raw.replyToPreviewText === "string" ? raw.replyToPreviewText : undefined,
     replyToActorId: typeof raw.replyToActorId === "string" ? raw.replyToActorId : undefined,
     replyToActorDisplayName: typeof raw.replyToActorDisplayName === "string" ? raw.replyToActorDisplayName : undefined,

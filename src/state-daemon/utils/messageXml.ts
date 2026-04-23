@@ -51,7 +51,7 @@ export function formatFallbackReplyToPreviewNode(message: TelegramMessage): stri
     id: (message.metadata.replyToUserId ?? "").trim() || "unknown",
     entityType: inferSenderEntityTypeFromId(message.metadata.replyToUserId),
     displayName: message.metadata.replyToUsername,
-    usernameHandle: normalizeUsernameHandle(message.metadata.replyToUsername),
+    usernameHandle: message.metadata.replyToUsernameHandle,
   });
   const attrs = buildActorAttributes(fallbackActor, {
     speaker:

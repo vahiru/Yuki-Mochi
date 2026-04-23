@@ -13,6 +13,14 @@ export function normalizeUsernameHandle(value: string | null | undefined): strin
   return normalized.startsWith("@") ? normalized : `@${normalized}`;
 }
 
+function maybeExplicitUsernameHandle(value: string | null | undefined): string | null {
+  const normalized = (value ?? "").trim();
+  if (!normalized.startsWith("@")) {
+    return null;
+  }
+  return normalizeUsernameHandle(normalized);
+}
+
 export function usernameFromHandle(value: string | null | undefined): string | null {
   const normalized = normalizeUsernameHandle(value);
   if (!normalized) {
@@ -110,7 +118,9 @@ export function buildReplyActorRef(message: TelegramMessage): ActorRef | null {
       id: message.metadata.replyToUserId,
       entityType: inferSenderEntityTypeFromId(message.metadata.replyToUserId),
       displayName: message.metadata.replyToUsername,
-      usernameHandle: message.metadata.replyToUsername,
+      usernameHandle:
+        message.metadata.replyToUsernameHandle ??
+        maybeExplicitUsernameHandle(message.metadata.replyToUsername),
       isBot: false,
     }),
   );

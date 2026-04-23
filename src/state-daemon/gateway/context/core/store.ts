@@ -1394,6 +1394,7 @@ function toTelegramMessage(stored: SearchResult["messages"][number]): TelegramMe
         mentionUserIds?: string[];
         usernameHandle?: string;
         replyToUsername?: string;
+        replyToUsernameHandle?: string;
         replyToPreviewText?: string;
         senderEntityType?: TelegramMessage["metadata"]["senderEntityType"];
       })
@@ -1415,6 +1416,7 @@ function toTelegramMessage(stored: SearchResult["messages"][number]): TelegramMe
       replyToMessageId,
       replyToUserId: metadata?.replyToUserId ? metadata.replyToUserId : null,
       replyToUsername: metadataExt?.replyToUsername ? metadataExt.replyToUsername : null,
+      replyToUsernameHandle: metadataExt?.replyToUsernameHandle ? metadataExt.replyToUsernameHandle : null,
       replyToPreviewText: metadataExt?.replyToPreviewText ? metadataExt.replyToPreviewText : null,
       isReplyToMe: metadata?.isReplyToMe ?? false,
       isMentionMe: metadata?.isMentionMe ?? false,

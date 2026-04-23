@@ -258,6 +258,7 @@ export function createTelegramAdapter(
     if (!replyToUsername && replyToUserId) {
       replyToUsername = replyToUserId;
     }
+    const replyToUsernameHandle = message.metadata.replyToUsernameHandle ?? null;
 
     const isOwnMessage =
       message.userId === "bot" ||
@@ -270,6 +271,7 @@ export function createTelegramAdapter(
     if (
       replyToUserId === message.metadata.replyToUserId &&
       replyToUsername === (message.metadata.replyToUsername ?? null) &&
+      replyToUsernameHandle === (message.metadata.replyToUsernameHandle ?? null) &&
       isReplyToMe === message.metadata.isReplyToMe
     ) {
       return message;
@@ -281,6 +283,7 @@ export function createTelegramAdapter(
         ...message.metadata,
         replyToUserId,
         replyToUsername,
+        replyToUsernameHandle,
         isReplyToMe,
       },
     };
@@ -803,6 +806,7 @@ async function toTelegramMessage(
       replyToMessageId: message.reply_to_message?.message_id ?? null,
       replyToUserId: resolveReplyToUserId(message.reply_to_message),
       replyToUsername: replySnapshot.replyToUsername,
+      replyToUsernameHandle: replySnapshot.replyToUsernameHandle,
       replyToPreviewText: replySnapshot.replyToPreviewText,
       isReplyToMe: message.reply_to_message?.from?.id === ctx.me.id,
       isMentionMe: mentionMe,
@@ -862,6 +866,7 @@ async function toEditedTelegramMessage(
       replyToMessageId: message.reply_to_message?.message_id ?? null,
       replyToUserId: resolveReplyToUserId(message.reply_to_message),
       replyToUsername: replySnapshot.replyToUsername,
+      replyToUsernameHandle: replySnapshot.replyToUsernameHandle,
       replyToPreviewText: replySnapshot.replyToPreviewText,
       isReplyToMe: message.reply_to_message?.from?.id === ctx.me.id,
       isMentionMe: mentionMe,
@@ -910,6 +915,7 @@ function toOutgoingTelegramMessage(
       replyToMessageId: message.reply_to_message?.message_id ?? null,
       replyToUserId: resolveReplyToUserId(message.reply_to_message),
       replyToUsername: replySnapshot.replyToUsername,
+      replyToUsernameHandle: replySnapshot.replyToUsernameHandle,
       replyToPreviewText: replySnapshot.replyToPreviewText,
       isReplyToMe: false,
       isMentionMe: false,
@@ -930,6 +936,7 @@ function toEditedResultMessage(
     replyToMessageId: state.replyToMessageId,
     replyToUserId: state.replyToUserId,
     replyToUsername: state.replyToUserId,
+    replyToUsernameHandle: null,
     replyToPreviewText: null,
     isReplyToMe: false,
     isMentionMe: false,
@@ -1172,19 +1179,22 @@ function extractReplyPreviewFromTelegramMessage(
 
 function extractReplySnapshotFromTelegramMessage(
   message: TelegramIncomingMessageLike
-): { replyToUsername: string | null; replyToPreviewText: string | null } {
+): { replyToUsername: string | null; replyToUsernameHandle: string | null; replyToPreviewText: string | null } {
   const reply = message.reply_to_message;
   if (!reply) {
     return {
       replyToUsername: null,
+      replyToUsernameHandle: null,
       replyToPreviewText: null,
     };
   }
 
   const speakerFromName = buildDisplayNameFromSenderSource(reply.from, reply.sender_chat);
+  const replyToUsernameHandle = normalizeUsernameHandle(reply.sender_chat?.username ?? reply.from?.username);
   const speakerFromId = resolveReplyToUserId(reply);
   return {
     replyToUsername: speakerFromName ?? speakerFromId,
+    replyToUsernameHandle,
     replyToPreviewText: extractReplyPreviewFromTelegramMessage(reply),
   };
 }

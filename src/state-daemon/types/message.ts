@@ -40,6 +40,7 @@ export interface TelegramMessage {
     replyToMessageId: number | null;
     replyToUserId: string | null;
     replyToUsername?: string | null;
+    replyToUsernameHandle?: string | null;
     replyToPreviewText?: string | null;
     isReplyToMe: boolean;
     isMentionMe: boolean;
