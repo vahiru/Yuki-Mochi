@@ -869,6 +869,13 @@ function collectExplicitResolvedTargets(
     if (!actor) {
       continue;
     }
+    if (
+      message.metadata.isMentionMe &&
+      isLeadingMentionHandleVocative(message.context, normalizedHandle) &&
+      (actor.isBot || !isKnownActorId(actor.id))
+    ) {
+      continue;
+    }
     push({
       actorId: isKnownActorId(actor.id) ? actor.id : null,
       entityType: actor.entityType,
@@ -946,6 +953,12 @@ function containsDisplayNameReference(text: string, displayNameKey: string): boo
     return new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`).test(text);
   }
   return text.includes(displayNameKey);
+}
+
+function isLeadingMentionHandleVocative(text: string, normalizedHandle: string): boolean {
+  const trimmed = text.trimStart().toLowerCase();
+  const escaped = normalizedHandle.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${escaped}(?:\\s|[,，:：])+`, "u").test(trimmed);
 }
 
 function stripLeadingVocative(text: string, isMentionMe: boolean): string {

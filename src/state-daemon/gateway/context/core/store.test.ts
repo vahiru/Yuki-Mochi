@@ -246,16 +246,16 @@ describe("createInMemoryContextStore display-name targeting", () => {
         isSelf: true,
       }),
     });
-    await store.ingestMessage({
-      message: createMessage({
-        userId: "user:t",
-        messageId: 3,
-        context: "@Yuki Mochi, Mizuki 讨厌什么",
-        timestamp: 1710000002000,
-        username: "Tester",
-        mentionMe: true,
-      }),
+    const trigger = createMessage({
+      userId: "user:t",
+      messageId: 3,
+      context: "@Yuki_Mochi, Mizuki 讨厌什么",
+      timestamp: 1710000002000,
+      username: "Tester",
+      mentionMe: true,
     });
+    trigger.metadata.mentions = ["@Yuki_Mochi"];
+    await store.ingestMessage({ message: trigger });
 
     const snapshot = store.getContextByAnchor({ chatId: 100, messageId: 3 });
     expect(snapshot.resolvedTargets).toEqual([
