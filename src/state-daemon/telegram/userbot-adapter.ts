@@ -40,6 +40,8 @@ interface MentionExtraction {
   mentionUserIds: string[];
 }
 
+type TelegramResolvedEntity = Api.User | Api.Chat | Api.Channel;
+
 export interface UserBotAdapterOptions {
   apiId: number;
   apiHash: string;
@@ -333,6 +335,38 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
     return entity.title?.trim() || null;
   };
 
+  const getResolvedEntityFromMessage = (
+    message: Partial<{
+      sender: unknown;
+      _sender: unknown;
+      getSender: () => Promise<unknown>;
+    }>,
+  ): Promise<TelegramResolvedEntity | null> | TelegramResolvedEntity | null => {
+    const directCandidates = [message.sender, message._sender];
+    for (const candidate of directCandidates) {
+      if (
+        candidate instanceof Api.User ||
+        candidate instanceof Api.Chat ||
+        candidate instanceof Api.Channel
+      ) {
+        return candidate;
+      }
+    }
+    if (typeof message.getSender === "function") {
+      return message.getSender().then((candidate) => {
+        if (
+          candidate instanceof Api.User ||
+          candidate instanceof Api.Chat ||
+          candidate instanceof Api.Channel
+        ) {
+          return candidate;
+        }
+        return null;
+      }).catch(() => null);
+    }
+    return null;
+  };
+
   const resolveSenderIdentityFromPeer = (
     peer: Api.TypePeer | undefined | null,
   ): { userId: string; senderEntityType: TelegramSenderEntityType } => {
@@ -463,7 +497,18 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
           const replyToUserId = replyIdentity.userId;
           let replyToUsername: string | null = replyToUserId;
           let replyToUsernameHandle: string | null = null;
-          if (repliedFromId) {
+          const localEntity = await getResolvedEntityFromMessage(repliedMessage);
+          if (
+            localEntity instanceof Api.User ||
+            localEntity instanceof Api.Chat ||
+            localEntity instanceof Api.Channel
+          ) {
+            replyToUsername = buildDisplayNameFromEntity(localEntity) ?? replyToUserId;
+            replyToUsernameHandle =
+              localEntity instanceof Api.User || localEntity instanceof Api.Channel
+                ? normalizeUsernameHandle(localEntity.username)
+                : null;
+          } else if (repliedFromId) {
             try {
               const entity = await client.getEntity(repliedFromId);
               if (
@@ -539,20 +584,23 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
     let isBot = false;
     let senderName: string | null = null;
     let senderUsernameHandle: string | null = null;
-    try {
-      if (fromId) {
-        const sender = await client.getEntity(fromId);
-        if (sender instanceof Api.User) {
-          const username = sender.username || "";
-          isBot = sender.bot || username.toLowerCase().includes("bot") || false;
-          senderName = buildDisplayNameFromEntity(sender);
-          senderUsernameHandle = normalizeUsernameHandle(sender.username);
-        } else if (sender instanceof Api.Chat || sender instanceof Api.Channel) {
-          senderName = buildDisplayNameFromEntity(sender);
+    let senderEntity = await getResolvedEntityFromMessage(msg);
+    if (!senderEntity) {
+      try {
+        if (fromId) {
+          senderEntity = await client.getEntity(fromId) as TelegramResolvedEntity;
         }
+      } catch (e) {
+        console.warn(`[userbot] Failed to get entity for ${fromId}:`, e);
       }
-    } catch (e) {
-      console.warn(`[userbot] Failed to get entity for ${fromId}:`, e);
+    }
+    if (senderEntity instanceof Api.User) {
+      const username = senderEntity.username || "";
+      isBot = senderEntity.bot || username.toLowerCase().includes("bot") || false;
+      senderName = buildDisplayNameFromEntity(senderEntity);
+      senderUsernameHandle = normalizeUsernameHandle(senderEntity.username);
+    } else if (senderEntity instanceof Api.Chat || senderEntity instanceof Api.Channel) {
+      senderName = buildDisplayNameFromEntity(senderEntity);
     }
 
     const photoCount = photoCountOverride ?? (msg.media instanceof Api.MessageMediaPhoto ? 1 : 0);
