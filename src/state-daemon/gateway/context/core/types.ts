@@ -62,7 +62,7 @@ export interface ResolvedTarget {
   entityType: ActorRef["entityType"];
   displayName: string | null;
   usernameHandle: string | null;
-  via: "reply" | "mention_user" | "mention_handle" | "pronoun";
+  via: "reply" | "mention_user" | "mention_handle" | "display_name" | "pronoun";
 }
 
 export interface ChatControlBlock {

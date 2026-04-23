@@ -3,6 +3,7 @@ import type { CloudModel, LocalModel } from "../../../model/llm";
 import type { ActorRef, TelegramMessage } from "../../../types/message";
 import { createArchiverService } from "../archiver";
 import { createContextSearcher } from "../searcher";
+import type { ContextSearcher } from "../searcher";
 import {
   decideSessionByLlm,
   decideSessionByReranker,
@@ -36,6 +37,7 @@ import {
 
 export interface CreateInMemoryContextStoreOptions {
   embedder?: DenseEmbedder;
+  contextSearcher?: ContextSearcher;
   similarityThreshold?: number;
   shortMessageThreshold?: number;
   alphaTime?: number;
@@ -96,7 +98,7 @@ export function createInMemoryContextStore(
   const localModel = options.localModel;
   const cloudModel = options.cloudModel;
   const archiverService = createArchiverService({ cloudModel });
-  const contextSearcher = createContextSearcher();
+  const contextSearcher = options.contextSearcher ?? createContextSearcher();
   const recallDebugEnabled = parseBooleanEnv(process.env.STATE_DAEMON_RECALL_DEBUG);
 
   return {
@@ -211,38 +213,32 @@ export function createInMemoryContextStore(
             now,
             explicitTargetActorIds,
           );
-          const targetScopedResults = filterSearchResultsByScore(
-            await contextSearcher.searchSemantic({
-              chatId,
-              query: materializedMessage.context,
-              limit: RECALL_RESULT_LIMIT,
-              targetActorIds: semanticResolution.targetActorIds,
-            }),
-            TARGET_SPEAKER_SEMANTIC_THRESHOLD,
-          );
-
-          let semanticResults = targetScopedResults;
-          let recallStage: "target" | "self" | "group" | "none" = semanticResults.length > 0 ? "target" : "none";
-
-          if (semanticResults.length === 0 && !semanticResolution.targetActorIds.includes(materializedMessage.userId)) {
-            const selfScopedResults = filterSearchResultsByScore(
+          const targetScopedResults = semanticResolution.targetActorIds.length > 0
+            ? filterSearchResultsByScore(
               await contextSearcher.searchSemantic({
                 chatId,
                 query: materializedMessage.context,
                 limit: RECALL_RESULT_LIMIT,
-                targetActorIds: [materializedMessage.userId],
+                targetActorIds: semanticResolution.targetActorIds,
               }),
-              SELF_SPEAKER_SEMANTIC_THRESHOLD,
-            );
-            if (selfScopedResults.length > 0) {
-              semanticResults = selfScopedResults;
-              recallStage = "self";
-            }
-          }
+              TARGET_SPEAKER_SEMANTIC_THRESHOLD,
+            )
+            : [];
+
+          let semanticResults = targetScopedResults;
+          let recallStage: "target" | "self" | "group" | "none" =
+            semanticResults.length > 0
+              ? (semanticResolution.reason === "self" ? "self" : "target")
+              : "none";
 
           if (
             semanticResults.length === 0 &&
-            shouldAllowGroupWideSemanticRecall(materializedMessage, semanticResolution.reason, explicitTargetActorIds)
+            shouldAllowGroupWideSemanticRecall(
+              materializedMessage,
+              semanticResolution.reason,
+              explicitTargetActorIds,
+              semanticResolution.hasDisplayNameReference,
+            )
           ) {
             const groupScopedResults = filterSearchResultsByScore(
               await contextSearcher.searchSemantic({
@@ -875,6 +871,99 @@ function collectKnownTargetActorIds(targets: ResolvedTarget[]): string[] {
     .filter((actorId): actorId is string => isKnownActorId(actorId));
 }
 
+function buildDisplayNameAliasIndex(ccb: ChatControlBlock): Map<string, Set<string>> {
+  const aliasToActorIds = new Map<string, Set<string>>();
+  for (const participant of ccb.participantsById.values()) {
+    if (!isKnownActorId(participant.actor.id)) {
+      continue;
+    }
+    const aliases = new Set<string>();
+    const currentKey = normalizeDisplayNameKey(participant.actor.displayName);
+    if (currentKey) {
+      aliases.add(currentKey);
+    }
+    for (const historicalName of participant.displayNameHistory) {
+      const historicalKey = normalizeDisplayNameKey(historicalName);
+      if (historicalKey) {
+        aliases.add(historicalKey);
+      }
+    }
+    for (const alias of aliases) {
+      let bucket = aliasToActorIds.get(alias);
+      if (!bucket) {
+        bucket = new Set<string>();
+        aliasToActorIds.set(alias, bucket);
+      }
+      bucket.add(participant.actor.id);
+    }
+  }
+  return aliasToActorIds;
+}
+
+function containsDisplayNameReference(text: string, displayNameKey: string): boolean {
+  if (displayNameKey.length < 2) {
+    return false;
+  }
+  if (/^[a-z0-9_]+$/.test(displayNameKey)) {
+    const escaped = displayNameKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`).test(text);
+  }
+  return text.includes(displayNameKey);
+}
+
+function collectDisplayNameResolvedTargets(
+  ccb: ChatControlBlock,
+  message: TelegramMessage,
+): { targets: ResolvedTarget[]; actorIds: string[]; hasReference: boolean } {
+  const normalizedText = normalizeDisplayNameKey(message.context);
+  if (!normalizedText) {
+    return { targets: [], actorIds: [], hasReference: false };
+  }
+
+  const aliasToActorIds = buildDisplayNameAliasIndex(ccb);
+  const matchedAliases = Array.from(aliasToActorIds.keys())
+    .filter((alias) => containsDisplayNameReference(normalizedText, alias))
+    .sort((a, b) => b.length - a.length);
+
+  if (matchedAliases.length === 0) {
+    return { targets: [], actorIds: [], hasReference: false };
+  }
+
+  const targets: ResolvedTarget[] = [];
+  const seenActorIds = new Set<string>();
+  for (const alias of matchedAliases) {
+    const actorIds = Array.from(aliasToActorIds.get(alias) ?? [])
+      .filter((actorId): actorId is string => isKnownActorId(actorId));
+    if (actorIds.length !== 1) {
+      continue;
+    }
+    const actorId = actorIds[0] ?? null;
+    if (!actorId || seenActorIds.has(actorId)) {
+      continue;
+    }
+    const actor = resolveKnownParticipantActor(ccb, actorId);
+    if (!actor) {
+      continue;
+    }
+    seenActorIds.add(actorId);
+    targets.push({
+      actorId,
+      entityType: actor.entityType,
+      displayName: actor.displayName,
+      usernameHandle: actor.usernameHandle,
+      via: "display_name",
+    });
+  }
+
+  return {
+    targets,
+    actorIds: targets
+      .map((target) => target.actorId)
+      .filter((actorId): actorId is string => isKnownActorId(actorId)),
+    hasReference: true,
+  };
+}
+
 function collectResolvedTargetsForContext(
   ccb: ChatControlBlock,
   message: TelegramMessage,
@@ -883,6 +972,10 @@ function collectResolvedTargetsForContext(
   const explicitTargets = collectExplicitResolvedTargets(ccb, message, now);
   if (explicitTargets.length > 0) {
     return explicitTargets;
+  }
+  const displayNameTargets = collectDisplayNameResolvedTargets(ccb, message);
+  if (displayNameTargets.targets.length > 0) {
+    return displayNameTargets.targets;
   }
   const inferred = inferTargetActorIdFromPronoun(ccb, message, now);
   if (!inferred) {
@@ -939,11 +1032,32 @@ function resolveRecallTargetActorIds(
   explicitTargets = collectKnownTargetActorIds(
     collectExplicitResolvedTargets(ccb, message, now),
   ),
-): { targetActorIds: string[]; reason: "explicit" | "pronoun" | "self" } {
+): {
+  targetActorIds: string[];
+  reason: "explicit" | "display_name" | "display_name_unresolved" | "pronoun" | "self";
+  hasDisplayNameReference: boolean;
+} {
   if (explicitTargets.length > 0) {
     return {
       targetActorIds: explicitTargets,
       reason: "explicit",
+      hasDisplayNameReference: false,
+    };
+  }
+
+  const displayNameTargets = collectDisplayNameResolvedTargets(ccb, message);
+  if (displayNameTargets.actorIds.length > 0) {
+    return {
+      targetActorIds: displayNameTargets.actorIds,
+      reason: "display_name",
+      hasDisplayNameReference: true,
+    };
+  }
+  if (displayNameTargets.hasReference) {
+    return {
+      targetActorIds: [],
+      reason: "display_name_unresolved",
+      hasDisplayNameReference: true,
     };
   }
 
@@ -952,24 +1066,30 @@ function resolveRecallTargetActorIds(
     return {
       targetActorIds: [inferred],
       reason: "pronoun",
+      hasDisplayNameReference: false,
     };
   }
 
   return {
     targetActorIds: [message.userId],
     reason: "self",
+    hasDisplayNameReference: false,
   };
 }
 
 function shouldAllowGroupWideSemanticRecall(
   message: TelegramMessage,
-  recallReason: "explicit" | "pronoun" | "self",
+  recallReason: "explicit" | "display_name" | "display_name_unresolved" | "pronoun" | "self",
   explicitTargetActorIds: string[],
+  hasDisplayNameReference: boolean,
 ): boolean {
   if (message.metadata.replyToMessageId !== null) {
     return false;
   }
   if (explicitTargetActorIds.length > 0) {
+    return false;
+  }
+  if (hasDisplayNameReference) {
     return false;
   }
   if (recallReason !== "self") {
