@@ -157,4 +157,59 @@ describe("createInMemoryContextStore display-name targeting", () => {
       }),
     );
   });
+
+  test("does not treat stale historical display names as an active ambiguity", async () => {
+    const store = createInMemoryContextStore({
+      embedder,
+      contextSearcher,
+      similarityThreshold: 0.99,
+      shortMessageThreshold: 0.99,
+    });
+
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:stale",
+        messageId: 1,
+        context: "我之前叫 Mizuki",
+        timestamp: 1710000000000,
+        username: "Mizuki",
+      }),
+    });
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:stale",
+        messageId: 2,
+        context: "我现在叫 坏猫",
+        timestamp: 1710000001000,
+        username: "坏猫",
+      }),
+    });
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:live",
+        messageId: 3,
+        context: "我是个小药娘",
+        timestamp: 1710000002000,
+        username: "Mizuki",
+      }),
+    });
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:t",
+        messageId: 4,
+        context: "Mizuki是什么娘",
+        timestamp: 1710000003000,
+        username: "Tester",
+      }),
+    });
+
+    const snapshot = store.getContextByAnchor({ chatId: 100, messageId: 4 });
+    expect(snapshot.resolvedTargets).toEqual([
+      expect.objectContaining({
+        actorId: "user:live",
+        displayName: "Mizuki",
+        via: "display_name",
+      }),
+    ]);
+  });
 });

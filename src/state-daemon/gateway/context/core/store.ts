@@ -917,33 +917,24 @@ function focusMessagesByResolvedTargets(
   return focused.length > 0 ? focused : messages;
 }
 
-function buildDisplayNameAliasIndex(ccb: ChatControlBlock): Map<string, Set<string>> {
-  const aliasToActorIds = new Map<string, Set<string>>();
+function buildCurrentDisplayNameIndex(ccb: ChatControlBlock): Map<string, Set<string>> {
+  const displayNameToActorIds = new Map<string, Set<string>>();
   for (const participant of ccb.participantsById.values()) {
     if (!isKnownActorId(participant.actor.id)) {
       continue;
     }
-    const aliases = new Set<string>();
     const currentKey = normalizeDisplayNameKey(participant.actor.displayName);
-    if (currentKey) {
-      aliases.add(currentKey);
+    if (!currentKey) {
+      continue;
     }
-    for (const historicalName of participant.displayNameHistory) {
-      const historicalKey = normalizeDisplayNameKey(historicalName);
-      if (historicalKey) {
-        aliases.add(historicalKey);
-      }
+    let bucket = displayNameToActorIds.get(currentKey);
+    if (!bucket) {
+      bucket = new Set<string>();
+      displayNameToActorIds.set(currentKey, bucket);
     }
-    for (const alias of aliases) {
-      let bucket = aliasToActorIds.get(alias);
-      if (!bucket) {
-        bucket = new Set<string>();
-        aliasToActorIds.set(alias, bucket);
-      }
-      bucket.add(participant.actor.id);
-    }
+    bucket.add(participant.actor.id);
   }
-  return aliasToActorIds;
+  return displayNameToActorIds;
 }
 
 function containsDisplayNameReference(text: string, displayNameKey: string): boolean {
@@ -1039,7 +1030,7 @@ function collectDisplayNameResolvedTargets(
     return { targets: [], actorIds: [], hasReference: false };
   }
 
-  const aliasToActorIds = buildDisplayNameAliasIndex(ccb);
+  const aliasToActorIds = buildCurrentDisplayNameIndex(ccb);
   const matchedAliases = Array.from(aliasToActorIds.keys())
     .filter((alias) => containsDisplayNameReference(normalizedText, alias))
     .sort((a, b) => b.length - a.length);
