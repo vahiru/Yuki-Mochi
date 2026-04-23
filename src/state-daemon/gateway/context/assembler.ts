@@ -13,9 +13,21 @@ import {
   getSenderId,
   getSpeaker,
 } from "../../utils/messageXml";
-import type { ContextAssembler, ResolvedTarget } from "./core/types";
+import type { ContextAssembler, ParticipantState, ResolvedTarget } from "./core/types";
 import type { TelegramMessage } from "../../types/message";
 import { isKnownActorId } from "../../utils/actor";
+
+type UnresolvedTargetQuery = {
+  source: "display_name" | "mention_handle";
+  matchType:
+    | "ambiguous_display_name"
+    | "display_name_not_resolved"
+    | "approx_display_name"
+    | "unknown_handle";
+  rawText: string;
+  closestDisplayName?: string;
+  distance?: number;
+};
 
 export function createContextAssembler(): ContextAssembler {
   return {
@@ -76,6 +88,9 @@ export function createContextAssembler(): ContextAssembler {
         ? resolvedTargets.map((target) => `    ${formatResolvedTargetNode(target)}`).join("\n")
         : "";
       const compactTarget = pickCompactResolvedTarget(resolvedTargets, normalizedTargetMessages);
+      const unresolvedTarget = compactTarget
+        ? null
+        : pickUnresolvedTargetQuery(triggerMessage, participants, resolvedTargets);
       const xml = compactTarget
         ? `<target_query>
   ${formatResolvedTargetNode(compactTarget)}
@@ -90,6 +105,14 @@ ${normalizedTargetMessages.map((message) => formatNormalMessageNode(
     ${escapeXml(triggerMessage.context)}
   </query>
 </target_query>`
+        : unresolvedTarget
+          ? `<unresolved_target_query>
+  ${formatUnresolvedTargetNode(unresolvedTarget)}
+  <query id="${triggerMessage.messageId}" sender_id="${escapeXml(getSenderId(triggerMessage))}" sender_entity_type="${escapeXml(getSenderEntityType(triggerMessage))}" speaker="${escapeXml(getSpeaker(triggerMessage))}"${currentDisplayNameAttribute}${currentSenderHandleAttribute} timestamp="${formatTimestampUtc8(triggerMessage.timestamp)}"${currentReplyToAttribute}>
+    ${currentReplyPreview}
+    ${escapeXml(triggerMessage.context)}
+  </query>
+</unresolved_target_query>`
         : `<context>
   <participants>
 ${participantsXml}
@@ -155,4 +178,268 @@ function pickCompactResolvedTarget(
     return null;
   }
   return resolvedTargets.find((target) => target.actorId === uniqueKnownActorIds[0]) ?? null;
+}
+
+function formatUnresolvedTargetNode(target: UnresolvedTargetQuery): string {
+  const attrs = [
+    `source="${escapeXml(target.source)}"`,
+    `match_type="${escapeXml(target.matchType)}"`,
+    `raw_text="${escapeXml(target.rawText)}"`,
+  ];
+  if (target.closestDisplayName) {
+    attrs.push(`closest_display_name="${escapeXml(target.closestDisplayName)}"`);
+  }
+  if (typeof target.distance === "number") {
+    attrs.push(`distance="${target.distance}"`);
+  }
+  return `<unresolved_target ${attrs.join(" ")} />`;
+}
+
+function pickUnresolvedTargetQuery(
+  triggerMessage: TelegramMessage,
+  participants: ParticipantState[],
+  resolvedTargets: ResolvedTarget[],
+): UnresolvedTargetQuery | null {
+  const knownResolvedActorIds = resolvedTargets
+    .map((target) => target.actorId)
+    .filter((actorId): actorId is string => isKnownActorId(actorId));
+  if (knownResolvedActorIds.length > 0) {
+    return null;
+  }
+
+  const unresolvedHandle = resolvedTargets.find(
+    (target) => target.via === "mention_handle" && !isKnownActorId(target.actorId),
+  );
+  if (unresolvedHandle) {
+    const rawText = unresolvedHandle.usernameHandle ?? unresolvedHandle.displayName ?? "unknown";
+    return {
+      source: "mention_handle",
+      matchType: "unknown_handle",
+      rawText,
+    };
+  }
+
+  const normalizedText = normalizeDisplayNameKey(
+    stripLeadingVocative(triggerMessage.context, triggerMessage.metadata.isMentionMe),
+  );
+  if (!normalizedText) {
+    return null;
+  }
+
+  const displayNameAliases = collectCurrentDisplayNameAliases(participants);
+  if (displayNameAliases.length === 0) {
+    return null;
+  }
+
+  const exactMatches = displayNameAliases
+    .filter((alias) => containsDisplayNameReference(normalizedText, alias.key))
+    .sort((a, b) => b.key.length - a.key.length);
+  if (exactMatches.length > 0) {
+    const primaryMatch = exactMatches[0];
+    return {
+      source: "display_name",
+      matchType: primaryMatch.actorIds.length > 1
+        ? "ambiguous_display_name"
+        : "display_name_not_resolved",
+      rawText: primaryMatch.displayName,
+      closestDisplayName: primaryMatch.actorIds.length === 1 ? primaryMatch.displayName : undefined,
+    };
+  }
+
+  const approximateMatch = findApproximateDisplayNameMatch(normalizedText, displayNameAliases);
+  if (!approximateMatch) {
+    return null;
+  }
+  return {
+    source: "display_name",
+    matchType: approximateMatch.actorIds.length > 1
+      ? "ambiguous_display_name"
+      : "approx_display_name",
+    rawText: approximateMatch.rawText,
+    closestDisplayName: approximateMatch.displayName,
+    distance: approximateMatch.distance,
+  };
+}
+
+function stripLeadingVocative(text: string, isMentionMe: boolean): string {
+  if (!isMentionMe) {
+    return text;
+  }
+  return text.trim().replace(/^[^,，:：]{1,64}[,，:：]\s*/u, "");
+}
+
+function normalizeDisplayNameKey(value: string | null | undefined): string | null {
+  const normalized = (value ?? "").trim();
+  return normalized ? normalized.toLowerCase() : null;
+}
+
+function containsDisplayNameReference(text: string, displayNameKey: string): boolean {
+  if (displayNameKey.length < 2) {
+    return false;
+  }
+  if (/^[a-z0-9_]+$/.test(displayNameKey)) {
+    const escaped = displayNameKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`).test(text);
+  }
+  return text.includes(displayNameKey);
+}
+
+function collectCurrentDisplayNameAliases(
+  participants: ParticipantState[],
+): Array<{ key: string; displayName: string; actorIds: string[] }> {
+  const aliases = new Map<string, { displayName: string; actorIds: Set<string> }>();
+  for (const participant of participants) {
+    if (!isKnownActorId(participant.actor.id)) {
+      continue;
+    }
+    const displayName = (participant.actor.displayName ?? "").trim();
+    const key = normalizeDisplayNameKey(displayName);
+    if (!key || key.length < 2) {
+      continue;
+    }
+    const existing = aliases.get(key);
+    if (existing) {
+      existing.actorIds.add(participant.actor.id);
+      continue;
+    }
+    aliases.set(key, {
+      displayName,
+      actorIds: new Set([participant.actor.id]),
+    });
+  }
+  return Array.from(aliases.entries()).map(([key, value]) => ({
+    key,
+    displayName: value.displayName,
+    actorIds: Array.from(value.actorIds).sort(),
+  }));
+}
+
+function findApproximateDisplayNameMatch(
+  normalizedText: string,
+  aliases: Array<{ key: string; displayName: string; actorIds: string[] }>,
+): {
+  rawText: string;
+  displayName: string;
+  actorIds: string[];
+  distance: number;
+} | null {
+  const fragments = collectApproximateTargetFragments(normalizedText, aliases);
+  let bestMatch: {
+    rawText: string;
+    displayName: string;
+    actorIds: string[];
+    distance: number;
+    aliasKeyLength: number;
+  } | null = null;
+
+  for (const fragment of fragments) {
+    for (const alias of aliases) {
+      const maxDistance = 1;
+      const distance = damerauLevenshtein(fragment, alias.key);
+      if (distance > maxDistance) {
+        continue;
+      }
+      if (
+        !bestMatch ||
+        distance < bestMatch.distance ||
+        (distance === bestMatch.distance && alias.key.length > bestMatch.aliasKeyLength)
+      ) {
+        bestMatch = {
+          rawText: fragment,
+          displayName: alias.displayName,
+          actorIds: alias.actorIds,
+          distance,
+          aliasKeyLength: alias.key.length,
+        };
+      }
+    }
+  }
+  if (!bestMatch) {
+    return null;
+  }
+  return {
+    rawText: bestMatch.rawText,
+    displayName: bestMatch.displayName,
+    actorIds: bestMatch.actorIds,
+    distance: bestMatch.distance,
+  };
+}
+
+function collectApproximateTargetFragments(
+  normalizedText: string,
+  aliases: Array<{ key: string }>,
+): string[] {
+  const fragments = new Set<string>();
+  for (const token of normalizedText.match(/[a-z0-9_@.\-]+/giu) ?? []) {
+    const normalized = token.trim().toLowerCase();
+    if (normalized.length >= 2) {
+      fragments.add(normalized);
+    }
+  }
+
+  const nonAsciiAliasLengths = Array.from(new Set(
+    aliases
+      .filter((alias) => !/^[a-z0-9_]+$/.test(alias.key))
+      .map((alias) => Array.from(alias.key).length),
+  ));
+  if (nonAsciiAliasLengths.length === 0) {
+    return Array.from(fragments);
+  }
+
+  const trimmed = normalizedText.trim();
+  const leadingRun = extractLeadingNonAsciiRun(trimmed);
+  if (!leadingRun) {
+    return Array.from(fragments);
+  }
+  const leadingChars = Array.from(leadingRun);
+  for (const aliasLength of nonAsciiAliasLengths) {
+    for (const candidateLength of new Set([aliasLength - 1, aliasLength, aliasLength + 1])) {
+      if (candidateLength < 2 || candidateLength > leadingChars.length) {
+        continue;
+      }
+      fragments.add(leadingChars.slice(0, candidateLength).join(""));
+    }
+  }
+
+  return Array.from(fragments);
+}
+
+function extractLeadingNonAsciiRun(value: string): string {
+  const match = value.match(/^[^\s,，:：!?？！]+/u);
+  return match?.[0] ?? "";
+}
+
+function damerauLevenshtein(left: string, right: string): number {
+  const a = Array.from(left);
+  const b = Array.from(right);
+  const matrix = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
+
+  for (let i = 0; i <= a.length; i += 1) {
+    matrix[i]![0] = i;
+  }
+  for (let j = 0; j <= b.length; j += 1) {
+    matrix[0]![j] = j;
+  }
+
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let distance = Math.min(
+        matrix[i - 1]![j]! + 1,
+        matrix[i]![j - 1]! + 1,
+        matrix[i - 1]![j - 1]! + substitutionCost,
+      );
+      if (
+        i > 1 &&
+        j > 1 &&
+        a[i - 1] === b[j - 2] &&
+        a[i - 2] === b[j - 1]
+      ) {
+        distance = Math.min(distance, matrix[i - 2]![j - 2]! + 1);
+      }
+      matrix[i]![j] = distance;
+    }
+  }
+
+  return matrix[a.length]![b.length]!;
 }

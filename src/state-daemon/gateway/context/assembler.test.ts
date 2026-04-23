@@ -161,4 +161,87 @@ describe("createContextAssembler", () => {
     expect(result[1]?.content).toContain("<resolved_targets>");
     expect(result[1]?.content).not.toContain("<target_query>");
   });
+
+  test("renders unresolved_target_query for an unresolved display-name typo without leaking mixed history", () => {
+    const assembler = createContextAssembler();
+    const triggerMessage = createMessage();
+    triggerMessage.context = "Mazuki喜欢什么花呢";
+
+    const mizukiMessage = createMessage({
+      username: "Mizuki",
+      usernameHandle: null,
+      senderEntityType: "user",
+    });
+    mizukiMessage.userId = "2002";
+    mizukiMessage.messageId = 2;
+    mizukiMessage.context = "我喜欢玫瑰花";
+
+    const huaiMaoMessage = createMessage({
+      username: "坏猫",
+      usernameHandle: null,
+      senderEntityType: "user",
+    });
+    huaiMaoMessage.userId = "3003";
+    huaiMaoMessage.messageId = 3;
+    huaiMaoMessage.context = "我喜欢百合";
+
+    const participants: ParticipantState[] = [
+      {
+        actor: {
+          id: "2002",
+          entityType: "user",
+          displayName: "Mizuki",
+          username: null,
+          usernameHandle: null,
+          isBot: false,
+        },
+        firstSeenAt: 1710000000000,
+        lastSeenAt: 1710000000000,
+        messageCount: 1,
+        recentMessageIds: [2],
+        displayNameHistory: ["Mizuki"],
+        usernameHistory: [],
+        hasDisplayNameConflict: false,
+      },
+      {
+        actor: {
+          id: "3003",
+          entityType: "user",
+          displayName: "坏猫",
+          username: null,
+          usernameHandle: null,
+          isBot: false,
+        },
+        firstSeenAt: 1710000001000,
+        lastSeenAt: 1710000001000,
+        messageCount: 1,
+        recentMessageIds: [3],
+        displayNameHistory: ["坏猫"],
+        usernameHistory: [],
+        hasDisplayNameConflict: false,
+      },
+    ];
+
+    const result = assembler.build({
+      triggerMessage,
+      contextMessages: [mizukiMessage, huaiMaoMessage],
+      recentMessages: [mizukiMessage, huaiMaoMessage],
+      targetMessages: [],
+      participants,
+      identityEvents: [],
+      resolvedTargets: [],
+      systemPrompt: "system",
+    });
+
+    expect(result[1]?.content).toContain("<unresolved_target_query>");
+    expect(result[1]?.content).toContain('match_type="approx_display_name"');
+    expect(result[1]?.content).toContain('raw_text="mazuki"');
+    expect(result[1]?.content).toContain('closest_display_name="Mizuki"');
+    expect(result[1]?.content).toContain("<query");
+    expect(result[1]?.content).not.toContain("<context>");
+    expect(result[1]?.content).not.toContain("<recent_messages>");
+    expect(result[1]?.content).not.toContain("<related_history>");
+    expect(result[1]?.content).not.toContain("我喜欢玫瑰花");
+    expect(result[1]?.content).not.toContain("我喜欢百合");
+  });
 });
