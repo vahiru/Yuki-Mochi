@@ -91,6 +91,7 @@ const DEFAULT_STRICT_TEXT_FALLBACK = true;
 const VISION_DEBUG_ENABLED = /^(1|true|yes)$/i.test(
   (process.env.VISION_DEBUG ?? "").trim()
 );
+const PHOTO_PLACEHOLDER_PATTERN = /\[photo(?:\s*x\d+)?\]/g;
 type SendMessageMode = "strict" | "compat";
 
 function createCompatibleModel(modelId: string, baseURL: string): Model<"openai-completions"> {
@@ -409,46 +410,159 @@ function extractVisionMessageText(content: unknown): string {
   return text;
 }
 
-function injectVisionDescription(messages: AgentLoopMessage[], description: string): AgentLoopMessage[] {
-  let replacedAny = false;
-  const replacedMessages = messages.map((message) => {
-    if (message.role !== "user") {
-      return message;
-    }
-    const content = message.content.replace(
-      /\[photo(?:\s*x\d+)?\]/g,
-      `[图片内容: ${description}]`
-    );
-    if (content !== message.content) {
-      replacedAny = true;
-      return { ...message, content };
-    }
-    return message;
-  });
-
-  if (replacedAny) {
-    return replacedMessages;
+export function injectVisionDescription(messages: AgentLoopMessage[], description: string): AgentLoopMessage[] {
+  const replacement = `[图片内容: ${description}]`;
+  const injectedStructured = injectVisionDescriptionIntoStructuredMessage(messages, replacement);
+  if (injectedStructured) {
+    return injectedStructured;
   }
 
-  for (let i = replacedMessages.length - 1; i >= 0; i--) {
-    if (replacedMessages[i].role !== "user") {
+  const injectedPlaceholder = injectVisionDescriptionIntoLastPlaceholder(messages, replacement);
+  if (injectedPlaceholder) {
+    return injectedPlaceholder;
+  }
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role !== "user") {
       continue;
     }
-    const suffix = `\n\n[图片内容: ${description}]`;
-    replacedMessages[i] = {
-      ...replacedMessages[i],
-      content: `${replacedMessages[i].content}${suffix}`,
+    const next = messages.slice();
+    next[i] = {
+      ...next[i],
+      content: `${next[i]!.content}\n\n${replacement}`,
     };
     if (VISION_DEBUG_ENABLED) {
-      console.warn("[vision] no [photo] placeholder found, appended image description to last user message");
+      console.warn("[vision] no scoped [photo] placeholder found, appended image description to last user message");
     }
-    return replacedMessages;
+    return next;
   }
 
   return [
-    ...replacedMessages,
-    { role: "user", content: `[图片内容: ${description}]` },
+    ...messages,
+    { role: "user", content: replacement },
   ];
+}
+
+function injectVisionDescriptionIntoStructuredMessage(
+  messages: AgentLoopMessage[],
+  replacement: string,
+): AgentLoopMessage[] | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role !== "user") {
+      continue;
+    }
+    const injectedContent =
+      injectVisionDescriptionIntoLastTaggedBlock(message.content, "current_message", replacement) ??
+      injectVisionDescriptionIntoLastTaggedBlock(message.content, "query", replacement);
+    if (!injectedContent) {
+      continue;
+    }
+    const next = messages.slice();
+    next[i] = { ...message, content: injectedContent };
+    return next;
+  }
+  return null;
+}
+
+function injectVisionDescriptionIntoLastPlaceholder(
+  messages: AgentLoopMessage[],
+  replacement: string,
+): AgentLoopMessage[] | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role !== "user") {
+      continue;
+    }
+    const injected = replaceLastPhotoPlaceholder(message.content, replacement);
+    if (!injected) {
+      continue;
+    }
+    const next = messages.slice();
+    next[i] = { ...message, content: injected };
+    return next;
+  }
+  return null;
+}
+
+function injectVisionDescriptionIntoLastTaggedBlock(
+  content: string,
+  tagName: "current_message" | "query",
+  replacement: string,
+): string | null {
+  const blockPattern = new RegExp(`<${tagName}\\b[^>]*>[\\s\\S]*?<\\/${tagName}>`, "g");
+  const matches = Array.from(content.matchAll(blockPattern));
+  for (let i = matches.length - 1; i >= 0; i -= 1) {
+    const match = matches[i];
+    const block = match?.[0];
+    const start = match?.index;
+    if (!block || start == null) {
+      continue;
+    }
+    const injectedBlock = injectVisionDescriptionIntoTaggedBlock(block, tagName, replacement);
+    if (!injectedBlock) {
+      continue;
+    }
+    return `${content.slice(0, start)}${injectedBlock}${content.slice(start + block.length)}`;
+  }
+  return null;
+}
+
+function injectVisionDescriptionIntoTaggedBlock(
+  block: string,
+  tagName: "current_message" | "query",
+  replacement: string,
+): string | null {
+  const closingTag = `</${tagName}>`;
+  const closingIndex = block.lastIndexOf(closingTag);
+  if (closingIndex < 0) {
+    return null;
+  }
+  const bodyStart = findScopedBodyStart(block, tagName);
+  const head = block.slice(0, bodyStart);
+  const body = block.slice(bodyStart, closingIndex);
+  const tail = block.slice(closingIndex);
+  const replacedBody = replaceLastPhotoPlaceholder(body, replacement);
+  if (replacedBody) {
+    return `${head}${replacedBody}${tail}`;
+  }
+  return `${head}${appendVisionDescription(body, replacement)}${tail}`;
+}
+
+function findScopedBodyStart(block: string, tagName: "current_message" | "query"): number {
+  const openingEnd = block.indexOf(">");
+  if (openingEnd < 0) {
+    return 0;
+  }
+  let bodyStart = openingEnd + 1;
+  const nestedClosingTags = tagName === "current_message"
+    ? ["</resolved_targets>", "</reply_to_preview>"]
+    : ["</reply_to_preview>"];
+  for (const closingTag of nestedClosingTags) {
+    const index = block.lastIndexOf(closingTag);
+    if (index >= 0) {
+      bodyStart = Math.max(bodyStart, index + closingTag.length);
+    }
+  }
+  return bodyStart;
+}
+
+function replaceLastPhotoPlaceholder(content: string, replacement: string): string | null {
+  const matches = Array.from(content.matchAll(PHOTO_PLACEHOLDER_PATTERN));
+  const lastMatch = matches[matches.length - 1];
+  const start = lastMatch?.index;
+  const matchedText = lastMatch?.[0];
+  if (start == null || !matchedText) {
+    return null;
+  }
+  return `${content.slice(0, start)}${replacement}${content.slice(start + matchedText.length)}`;
+}
+
+function appendVisionDescription(content: string, replacement: string): string {
+  const trailingWhitespace = content.match(/\s*$/)?.[0] ?? "";
+  const body = content.slice(0, content.length - trailingWhitespace.length);
+  const separator = body.trim().length === 0 ? "\n  " : "\n  ";
+  return `${body}${separator}${replacement}${trailingWhitespace}`;
 }
 
 async function preprocessVisionContent(
