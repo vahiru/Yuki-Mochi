@@ -1025,7 +1025,9 @@ function collectDisplayNameResolvedTargets(
   ccb: ChatControlBlock,
   message: TelegramMessage,
 ): { targets: ResolvedTarget[]; actorIds: string[]; hasReference: boolean } {
-  const normalizedText = normalizeDisplayNameKey(message.context);
+  const normalizedText = normalizeDisplayNameKey(
+    stripLeadingVocative(message.context, message.metadata.isMentionMe),
+  );
   if (!normalizedText) {
     return { targets: [], actorIds: [], hasReference: false };
   }

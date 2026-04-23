@@ -26,6 +26,10 @@ function createMessage(input: {
   context: string;
   timestamp: number;
   username: string | null;
+  usernameHandle?: string | null;
+  isBot?: boolean;
+  isSelf?: boolean;
+  mentionMe?: boolean;
 }): TelegramMessage {
   return {
     userId: input.userId,
@@ -35,10 +39,10 @@ function createMessage(input: {
     context: input.context,
     timestamp: input.timestamp,
     metadata: {
-      isBot: false,
-      isSelf: false,
+      isBot: input.isBot ?? false,
+      isSelf: input.isSelf ?? false,
       username: input.username,
-      usernameHandle: null,
+      usernameHandle: input.usernameHandle ?? null,
       senderEntityType: "user",
       replyToMessageId: null,
       replyToUserId: null,
@@ -46,7 +50,7 @@ function createMessage(input: {
       replyToUsernameHandle: null,
       replyToPreviewText: null,
       isReplyToMe: false,
-      isMentionMe: false,
+      isMentionMe: input.mentionMe ?? false,
       mentions: [],
       mentionUserIds: [],
     },
@@ -209,6 +213,62 @@ describe("createInMemoryContextStore display-name targeting", () => {
         actorId: "user:live",
         displayName: "Mizuki",
         via: "display_name",
+      }),
+    ]);
+  });
+
+  test("ignores leading bot vocative when resolving display-name targets", async () => {
+    const store = createInMemoryContextStore({
+      embedder,
+      contextSearcher,
+      similarityThreshold: 0.99,
+      shortMessageThreshold: 0.99,
+    });
+
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:m",
+        messageId: 1,
+        context: "收集数据很烦人",
+        timestamp: 1710000000000,
+        username: "Mizuki",
+      }),
+    });
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "bot",
+        messageId: 2,
+        context: "确实呢，反复填表很消磨热情。",
+        timestamp: 1710000001000,
+        username: "Yuki Mochi",
+        usernameHandle: "@yuki_mochi",
+        isBot: true,
+        isSelf: true,
+      }),
+    });
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:t",
+        messageId: 3,
+        context: "@Yuki Mochi, Mizuki 讨厌什么",
+        timestamp: 1710000002000,
+        username: "Tester",
+        mentionMe: true,
+      }),
+    });
+
+    const snapshot = store.getContextByAnchor({ chatId: 100, messageId: 3 });
+    expect(snapshot.resolvedTargets).toEqual([
+      expect.objectContaining({
+        actorId: "user:m",
+        displayName: "Mizuki",
+        via: "display_name",
+      }),
+    ]);
+    expect(snapshot.targetMessages).toEqual([
+      expect.objectContaining({
+        userId: "user:m",
+        context: "收集数据很烦人",
       }),
     ]);
   });
