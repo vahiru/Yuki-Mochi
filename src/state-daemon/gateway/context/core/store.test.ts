@@ -30,6 +30,11 @@ function createMessage(input: {
   isBot?: boolean;
   isSelf?: boolean;
   mentionMe?: boolean;
+  replyToMessageId?: number | null;
+  replyToUserId?: string | null;
+  replyToUsername?: string | null;
+  replyToUsernameHandle?: string | null;
+  isReplyToMe?: boolean;
 }): TelegramMessage {
   return {
     userId: input.userId,
@@ -44,12 +49,12 @@ function createMessage(input: {
       username: input.username,
       usernameHandle: input.usernameHandle ?? null,
       senderEntityType: "user",
-      replyToMessageId: null,
-      replyToUserId: null,
-      replyToUsername: null,
-      replyToUsernameHandle: null,
+      replyToMessageId: input.replyToMessageId ?? null,
+      replyToUserId: input.replyToUserId ?? null,
+      replyToUsername: input.replyToUsername ?? null,
+      replyToUsernameHandle: input.replyToUsernameHandle ?? null,
       replyToPreviewText: null,
-      isReplyToMe: false,
+      isReplyToMe: input.isReplyToMe ?? false,
       isMentionMe: input.mentionMe ?? false,
       mentions: [],
       mentionUserIds: [],
@@ -269,6 +274,193 @@ describe("createInMemoryContextStore display-name targeting", () => {
       expect.objectContaining({
         userId: "user:m",
         context: "收集数据很烦人",
+      }),
+    ]);
+  });
+
+  test("resolves no-username display names in group facts without mixing another speaker", async () => {
+    const store = createInMemoryContextStore({
+      embedder,
+      contextSearcher,
+      similarityThreshold: 0.99,
+      shortMessageThreshold: 0.99,
+    });
+
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:m",
+        messageId: 1,
+        context: "我w5",
+        timestamp: 1710000000000,
+        username: "Mizuki",
+        usernameHandle: null,
+      }),
+    });
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:b",
+        messageId: 2,
+        context: "我w6",
+        timestamp: 1710000001000,
+        username: "坏猫",
+        usernameHandle: null,
+      }),
+    });
+    const trigger = createMessage({
+      userId: "user:t",
+      messageId: 3,
+      context: "@Yuki_Mochi, Mizuki w几",
+      timestamp: 1710000002000,
+      username: "Tester",
+      usernameHandle: null,
+      mentionMe: true,
+    });
+    trigger.metadata.mentions = ["@Yuki_Mochi"];
+    await store.ingestMessage({ message: trigger });
+
+    const snapshot = store.getContextByAnchor({ chatId: 100, messageId: 3 });
+    expect(snapshot.resolvedTargets).toEqual([
+      expect.objectContaining({
+        actorId: "user:m",
+        displayName: "Mizuki",
+        via: "display_name",
+      }),
+    ]);
+    expect(snapshot.targetMessages).toEqual([
+      expect.objectContaining({
+        userId: "user:m",
+        context: "我w5",
+      }),
+    ]);
+    expect(snapshot.targetMessages).not.toContainEqual(
+      expect.objectContaining({
+        userId: "user:b",
+      }),
+    );
+  });
+
+  test("prefers a unique display-name target over reply-to-bot when the text names someone", async () => {
+    const store = createInMemoryContextStore({
+      embedder,
+      contextSearcher,
+      similarityThreshold: 0.99,
+      shortMessageThreshold: 0.99,
+    });
+
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:m",
+        messageId: 1,
+        context: "我喜欢玩音击",
+        timestamp: 1710000000000,
+        username: "Mizuki",
+      }),
+    });
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "bot",
+        messageId: 2,
+        context: "vahiru喜欢玫瑰花和山茶花哦~",
+        timestamp: 1710000001000,
+        username: "Yuki Mochi",
+        usernameHandle: "@Yuki_Mochi",
+        isBot: true,
+        isSelf: true,
+      }),
+    });
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:m",
+        messageId: 3,
+        context: "Mizuki喜欢玩什么",
+        timestamp: 1710000002000,
+        username: "Mizuki",
+        replyToMessageId: 2,
+        replyToUserId: "bot",
+        replyToUsername: "Yuki Mochi",
+        replyToUsernameHandle: "@Yuki_Mochi",
+        isReplyToMe: true,
+      }),
+    });
+
+    const snapshot = store.getContextByAnchor({ chatId: 100, messageId: 3 });
+    expect(snapshot.resolvedTargets).toEqual([
+      expect.objectContaining({
+        actorId: "user:m",
+        displayName: "Mizuki",
+        via: "display_name",
+      }),
+    ]);
+    expect(snapshot.targetMessages).toEqual([
+      expect.objectContaining({
+        userId: "user:m",
+        context: "我喜欢玩音击",
+      }),
+    ]);
+    expect(snapshot.targetMessages).not.toContainEqual(
+      expect.objectContaining({
+        userId: "bot",
+      }),
+    );
+  });
+
+  test("keeps target actor recall isolated when another user states a conflicting preference", async () => {
+    const store = createInMemoryContextStore({
+      embedder,
+      contextSearcher,
+      similarityThreshold: 0.99,
+      shortMessageThreshold: 0.99,
+    });
+
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:m",
+        messageId: 1,
+        context: "我喜欢玩音击",
+        timestamp: 1710000000000,
+        username: "Mizuki",
+        usernameHandle: null,
+      }),
+    });
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:b",
+        messageId: 2,
+        context: "我喜欢玩中二节奏",
+        timestamp: 1710000001000,
+        username: "坏猫",
+        usernameHandle: null,
+      }),
+    });
+    await store.ingestMessage({
+      message: createMessage({
+        userId: "user:t",
+        messageId: 3,
+        context: "Mizuki喜欢玩什么",
+        timestamp: 1710000002000,
+        username: "Tester",
+        usernameHandle: null,
+      }),
+    });
+
+    const snapshot = store.getContextByAnchor({ chatId: 100, messageId: 3 });
+    expect(snapshot.resolvedTargets).toEqual([
+      expect.objectContaining({
+        actorId: "user:m",
+        displayName: "Mizuki",
+        via: "display_name",
+      }),
+    ]);
+    expect(snapshot.targetMessages).toEqual([
+      expect.objectContaining({
+        userId: "user:m",
+        context: "我喜欢玩音击",
+      }),
+    ]);
+    expect(snapshot.sessionMessages).toEqual([
+      expect.objectContaining({
+        userId: "user:m",
+        context: "我喜欢玩音击",
       }),
     ]);
   });

@@ -1095,10 +1095,13 @@ function collectResolvedTargetsForContext(
   now: number,
 ): ResolvedTarget[] {
   const explicitTargets = collectExplicitResolvedTargets(ccb, message, now);
+  const displayNameTargets = collectDisplayNameResolvedTargets(ccb, message);
+  if (shouldPreferDisplayNameTargetsOverReplyToMe(message, explicitTargets, displayNameTargets.targets)) {
+    return displayNameTargets.targets;
+  }
   if (explicitTargets.length > 0) {
     return explicitTargets;
   }
-  const displayNameTargets = collectDisplayNameResolvedTargets(ccb, message);
   if (displayNameTargets.targets.length > 0) {
     return displayNameTargets.targets;
   }
@@ -1154,23 +1157,35 @@ function resolveRecallTargetActorIds(
   ccb: ChatControlBlock,
   message: TelegramMessage,
   now: number,
-  explicitTargets = collectKnownTargetActorIds(
-    collectExplicitResolvedTargets(ccb, message, now),
-  ),
+  explicitResolvedTargets = collectExplicitResolvedTargets(ccb, message, now),
 ): {
   targetActorIds: string[];
   reason: "explicit" | "display_name" | "display_name_unresolved" | "pronoun" | "self";
   hasDisplayNameReference: boolean;
 } {
-  if (explicitTargets.length > 0) {
+  const displayNameTargets = collectDisplayNameResolvedTargets(ccb, message);
+  const explicitTargetActorIds = collectKnownTargetActorIds(explicitResolvedTargets);
+  if (
+    shouldPreferDisplayNameTargetsOverReplyToMe(
+      message,
+      explicitResolvedTargets,
+      displayNameTargets.targets,
+    )
+  ) {
     return {
-      targetActorIds: explicitTargets,
+      targetActorIds: displayNameTargets.actorIds,
+      reason: "display_name",
+      hasDisplayNameReference: true,
+    };
+  }
+  if (explicitTargetActorIds.length > 0) {
+    return {
+      targetActorIds: explicitTargetActorIds,
       reason: "explicit",
       hasDisplayNameReference: false,
     };
   }
 
-  const displayNameTargets = collectDisplayNameResolvedTargets(ccb, message);
   if (displayNameTargets.actorIds.length > 0) {
     return {
       targetActorIds: displayNameTargets.actorIds,
@@ -1200,6 +1215,23 @@ function resolveRecallTargetActorIds(
     reason: "self",
     hasDisplayNameReference: false,
   };
+}
+
+function shouldPreferDisplayNameTargetsOverReplyToMe(
+  message: TelegramMessage,
+  explicitTargets: ResolvedTarget[],
+  displayNameTargets: ResolvedTarget[],
+): boolean {
+  if (!message.metadata.isReplyToMe) {
+    return false;
+  }
+  if (displayNameTargets.length !== 1) {
+    return false;
+  }
+  if (explicitTargets.length === 0) {
+    return false;
+  }
+  return explicitTargets.every((target) => target.via === "reply");
 }
 
 function shouldAllowGroupWideSemanticRecall(
