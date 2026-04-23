@@ -62,6 +62,7 @@ data/
 
 # logs
 .memoh-debug
+all_logs.txt
 
 # python
 __pycache__/
