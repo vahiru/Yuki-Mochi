@@ -30,7 +30,7 @@ function createMessage(overrides?: Partial<TelegramMessage["metadata"]>): Telegr
 }
 
 describe("createContextAssembler", () => {
-  test("renders participant and identity sections into context XML", () => {
+  test("renders compact target_query XML for a unique resolved target with evidence", () => {
     const assembler = createContextAssembler();
     const triggerMessage = createMessage({
       replyToMessageId: 9,
@@ -98,11 +98,67 @@ describe("createContextAssembler", () => {
       systemPrompt: "system",
     });
 
+    expect(result[1]?.content).toContain("<target_query>");
+    expect(result[1]?.content).toContain("<evidence>");
+    expect(result[1]?.content).toContain("<query");
+    expect(result[1]?.content).not.toContain("<participants>");
+    expect(result[1]?.content).not.toContain("<identity_events>");
+    expect(result[1]?.content).not.toContain("<target_actor_messages>");
+    expect(result[1]?.content).not.toContain("<resolved_targets>");
+    expect(result[1]?.content).toContain('sender_entity_type="user"');
+    expect(result[1]?.content).toContain('via="reply"');
+  });
+
+  test("falls back to the full context XML when target evidence is absent", () => {
+    const assembler = createContextAssembler();
+    const triggerMessage = createMessage();
+    triggerMessage.context = "Mizuki likes what";
+
+    const participants: ParticipantState[] = [
+      {
+        actor: {
+          id: "1001",
+          entityType: "user",
+          displayName: "Alice",
+          username: "alice",
+          usernameHandle: "@alice",
+          isBot: false,
+        },
+        firstSeenAt: 1710000000000,
+        lastSeenAt: 1710000000000,
+        messageCount: 1,
+        recentMessageIds: [1],
+        displayNameHistory: ["Alice"],
+        usernameHistory: ["@alice"],
+        hasDisplayNameConflict: false,
+      },
+    ];
+    const resolvedTargets: ResolvedTarget[] = [
+      {
+        actorId: "2002",
+        entityType: "user",
+        displayName: "Mizuki",
+        usernameHandle: null,
+        via: "display_name",
+      },
+    ];
+
+    const result = assembler.build({
+      triggerMessage,
+      contextMessages: [],
+      recentMessages: [],
+      targetMessages: [],
+      participants,
+      identityEvents: [],
+      resolvedTargets,
+      systemPrompt: "system",
+    });
+
+    expect(result[1]?.content).toContain("<context>");
     expect(result[1]?.content).toContain("<participants>");
     expect(result[1]?.content).toContain("<identity_events>");
     expect(result[1]?.content).toContain("<target_actor_messages>");
     expect(result[1]?.content).toContain("<resolved_targets>");
-    expect(result[1]?.content).toContain('sender_entity_type="user"');
-    expect(result[1]?.content).toContain('via="reply"');
+    expect(result[1]?.content).not.toContain("<target_query>");
   });
 });

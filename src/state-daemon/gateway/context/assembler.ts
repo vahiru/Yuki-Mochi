@@ -13,8 +13,9 @@ import {
   getSenderId,
   getSpeaker,
 } from "../../utils/messageXml";
-import type { ContextAssembler } from "./core/types";
+import type { ContextAssembler, ResolvedTarget } from "./core/types";
 import type { TelegramMessage } from "../../types/message";
+import { isKnownActorId } from "../../utils/actor";
 
 export function createContextAssembler(): ContextAssembler {
   return {
@@ -74,8 +75,22 @@ export function createContextAssembler(): ContextAssembler {
       const resolvedTargetsXml = resolvedTargets.length > 0
         ? resolvedTargets.map((target) => `    ${formatResolvedTargetNode(target)}`).join("\n")
         : "";
-
-      const xml = `<context>
+      const compactTarget = pickCompactResolvedTarget(resolvedTargets, normalizedTargetMessages);
+      const xml = compactTarget
+        ? `<target_query>
+  ${formatResolvedTargetNode(compactTarget)}
+  <evidence>
+${normalizedTargetMessages.map((message) => formatNormalMessageNode(
+  message,
+  findReplyTarget(message.metadata.replyToMessageId),
+)).join("\n")}
+  </evidence>
+  <query id="${triggerMessage.messageId}" sender_id="${escapeXml(getSenderId(triggerMessage))}" sender_entity_type="${escapeXml(getSenderEntityType(triggerMessage))}" speaker="${escapeXml(getSpeaker(triggerMessage))}"${currentDisplayNameAttribute}${currentSenderHandleAttribute} timestamp="${formatTimestampUtc8(triggerMessage.timestamp)}"${currentReplyToAttribute}>
+    ${currentReplyPreview}
+    ${escapeXml(triggerMessage.context)}
+  </query>
+</target_query>`
+        : `<context>
   <participants>
 ${participantsXml}
   </participants>
@@ -122,4 +137,22 @@ function buildReplyPreviewNode(
     return formatFallbackReplyToPreviewNode(message);
   }
   return "";
+}
+
+function pickCompactResolvedTarget(
+  resolvedTargets: ResolvedTarget[],
+  targetMessages: TelegramMessage[],
+) {
+  if (targetMessages.length === 0) {
+    return null;
+  }
+  const uniqueKnownActorIds = Array.from(new Set(
+    resolvedTargets
+      .map((target) => target.actorId)
+      .filter((actorId): actorId is string => isKnownActorId(actorId)),
+  ));
+  if (uniqueKnownActorIds.length !== 1) {
+    return null;
+  }
+  return resolvedTargets.find((target) => target.actorId === uniqueKnownActorIds[0]) ?? null;
 }
