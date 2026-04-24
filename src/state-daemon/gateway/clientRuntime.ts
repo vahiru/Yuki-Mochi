@@ -297,6 +297,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
   const buildContextMessages = async (
     triggerMessage: TelegramMessage,
     sendMessageMode: SendMessageMode,
+    groupPrompt?: string,
   ): Promise<LLMMessage[]> => {
     const contextSnapshot = contextStore.getContextByAnchor({
       chatId: triggerMessage.chatId,
@@ -306,7 +307,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
     const systemPrompt = await renderSystemPrompt(
       buildSystemPromptInput({
         sendMessageMode,
-        groupPrompt: loadGroupPromptByChatId(triggerMessage.chatId),
+        groupPrompt,
       }),
     );
 
@@ -343,16 +344,17 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
     triggerMessage,
   }) => {
     const sendMessageMode = resolveSendMessageMode();
-    const probeGroupPrompt = loadGroupPromptByChatId(triggerMessage.chatId);
-    const messages = await buildContextMessages(triggerMessage, sendMessageMode);
+    const groupPrompt = loadGroupPromptByChatId(triggerMessage.chatId);
+    const messages = await buildContextMessages(triggerMessage, sendMessageMode, groupPrompt);
     const targetingSignals = deriveTargetingSignals(triggerMessage);
     const lateBindingPrompt = await renderLateBindingPrompt({
       chatId: String(triggerMessage.chatId),
       timeNow: formatTimeNow(),
       conversationType: triggerMessage.conversationType,
+      groupPrompt,
       isProbeEnabled: true,
       isProbing: true,
-      probeGroupPrompt,
+      probeGroupPrompt: groupPrompt,
       isMentioned: triggerMessage.metadata.isMentionMe,
       isReplied: triggerMessage.metadata.isReplyToMe,
       isReplyingToOther: targetingSignals.isReplyingToOther,
@@ -387,13 +389,19 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
           text: "Retrieving memory and conversation context...",
         });
 
-        const llmMessages = await buildContextMessages(triggerMessage, sendMessageMode);
+        const groupPrompt = loadGroupPromptByChatId(triggerMessage.chatId);
+        const llmMessages = await buildContextMessages(
+          triggerMessage,
+          sendMessageMode,
+          groupPrompt,
+        );
         const normalizedPrompt = prompt.trim();
         const targetingSignals = deriveTargetingSignals(triggerMessage);
         const lateBindingPrompt = await renderLateBindingPrompt({
           chatId: String(triggerMessage.chatId),
           timeNow: formatTimeNow(),
           conversationType: triggerMessage.conversationType,
+          groupPrompt,
           isProbeEnabled: isProbeActivated === true,
           isProbing: false,
           isMentioned: triggerMessage.metadata.isMentionMe,

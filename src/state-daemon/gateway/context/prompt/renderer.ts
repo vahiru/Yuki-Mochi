@@ -32,6 +32,7 @@ export async function renderLateBindingPrompt(
       ...input,
       chatId: String(input.chatId),
       conversationType: input.conversationType ?? "private",
+      groupPrompt: input.groupPrompt ?? "",
       isProbeEnabled: input.isProbeEnabled ?? false,
       isProbing: input.isProbing ?? false,
       probeGroupPrompt: input.probeGroupPrompt ?? "",

@@ -97,6 +97,17 @@ get_weather(city: string): string
 - parameters:
   - city (string, required) - 城市名称，例如：天津、北京、上海
 
+## group_prompt_memory
+```ts
+group_prompt_memory(action: "get" | "set" | "add" | "clear", chat_id: string, content?: string): string
+```
+
+- description: Manage chat-scoped long-term prompt memory by chat_id. Use get/set/add/clear for explicit user memory instructions.
+- parameters:
+  - action ("get" | "set" | "add" | "clear", required) - Operation: get/set/add/clear.
+  - chat_id (string, required) - Target chat id scope.
+  - content (string, optional) - Prompt content. Required when action=set.
+
 ## high_precision_multiply
 ```ts
 high_precision_multiply(a: string, b: string): string

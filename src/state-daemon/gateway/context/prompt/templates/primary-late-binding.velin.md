@@ -4,6 +4,7 @@ defineProps({
   timeNow: { type: String, required: true },
   timeZoneLabel: { type: String, default: 'Asia/Shanghai' },
   conversationType: { type: String, default: 'private' },
+  groupPrompt: { type: String, default: '' },
   isProbeEnabled: { type: Boolean, default: false },
   isProbing: { type: Boolean, default: false },
   probeGroupPrompt: { type: String, default: '' },
@@ -42,6 +43,16 @@ Targeting hints:
 
 Additional runtime guideline:
 {{ extraGuideline }}
+
+</div>
+
+<div v-if="groupPrompt && !isProbing">
+
+Chat-Scoped Memory For Current Chat:
+{{ groupPrompt }}
+
+Apply this memory after trigger/decision rules and safety constraints.
+Use it to refine this chat's standing style/persona/output preferences.
 
 </div>
 

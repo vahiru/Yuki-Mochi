@@ -16,6 +16,7 @@ export interface RenderLateBindingPromptInput {
   timeNow: string;
   timeZoneLabel?: string;
   conversationType?: "private" | "group" | "supergroup" | "channel";
+  groupPrompt?: string;
   isProbeEnabled?: boolean;
   isProbing?: boolean;
   probeGroupPrompt?: string;
