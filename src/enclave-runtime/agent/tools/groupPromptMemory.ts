@@ -169,6 +169,16 @@ async function writeStoreAtomic(path: string, data: GroupPromptStoreData): Promi
 export function createGroupPromptMemoryStore(memoryFilesRoot = resolveMemoryFilesRoot()): GroupPromptMemoryStore {
   const root = resolve(memoryFilesRoot);
   const storePath = resolve(root, GROUP_PROMPT_STORE_FILE);
+  const locks = new Map<string, Promise<void>>();
+
+  const withLock = async <T>(chatId: string, fn: () => Promise<T>): Promise<T> => {
+    const prev = locks.get(chatId) ?? Promise.resolve();
+    let result: T;
+    const next = prev.then(async () => { result = await fn(); }, async () => { result = await fn(); });
+    locks.set(chatId, next);
+    await next;
+    return result!;
+  };
 
   const read = async () => readStore(storePath);
 
@@ -183,52 +193,58 @@ export function createGroupPromptMemoryStore(memoryFilesRoot = resolveMemoryFile
       return data.groups[chatId] ?? null;
     },
     set: async (chatId, prompt) => {
-      const data = await read();
-      const now = Date.now();
-      const nextRecord: GroupPromptRecord = { prompt, updatedAt: now };
-      const next: GroupPromptStoreData = {
-        version: data.version || 1,
-        groups: {
-          ...data.groups,
-          [chatId]: nextRecord,
-        },
-      };
-      await write(next);
-      return nextRecord;
+      return withLock(chatId, async () => {
+        const data = await read();
+        const now = Date.now();
+        const nextRecord: GroupPromptRecord = { prompt, updatedAt: now };
+        const next: GroupPromptStoreData = {
+          version: data.version || 1,
+          groups: {
+            ...data.groups,
+            [chatId]: nextRecord,
+          },
+        };
+        await write(next);
+        return nextRecord;
+      });
     },
     add: async (chatId, promptChunk) => {
-      const data = await read();
-      const now = Date.now();
-      const existingPrompt = data.groups[chatId]?.prompt ?? "";
-      const mergedPrompt = mergePromptWithDedup(existingPrompt, promptChunk);
-      if (mergedPrompt.length > MAX_PROMPT_CHARS) {
-        throw new Error(
-          `group_prompt_memory.add merged content too long. Max ${MAX_PROMPT_CHARS} chars.`,
-        );
-      }
-      const nextRecord: GroupPromptRecord = { prompt: mergedPrompt, updatedAt: now };
-      const next: GroupPromptStoreData = {
-        version: data.version || 1,
-        groups: {
-          ...data.groups,
-          [chatId]: nextRecord,
-        },
-      };
-      await write(next);
-      return nextRecord;
+      return withLock(chatId, async () => {
+        const data = await read();
+        const now = Date.now();
+        const existingPrompt = data.groups[chatId]?.prompt ?? "";
+        const mergedPrompt = mergePromptWithDedup(existingPrompt, promptChunk);
+        if (mergedPrompt.length > MAX_PROMPT_CHARS) {
+          throw new Error(
+            `group_prompt_memory.add merged content too long. Max ${MAX_PROMPT_CHARS} chars.`,
+          );
+        }
+        const nextRecord: GroupPromptRecord = { prompt: mergedPrompt, updatedAt: now };
+        const next: GroupPromptStoreData = {
+          version: data.version || 1,
+          groups: {
+            ...data.groups,
+            [chatId]: nextRecord,
+          },
+        };
+        await write(next);
+        return nextRecord;
+      });
     },
     clear: async (chatId) => {
-      const data = await read();
-      if (!(chatId in data.groups)) {
-        return false;
-      }
-      const groups = { ...data.groups };
-      delete groups[chatId];
-      await write({
-        version: data.version || 1,
-        groups,
+      return withLock(chatId, async () => {
+        const data = await read();
+        if (!(chatId in data.groups)) {
+          return false;
+        }
+        const groups = { ...data.groups };
+        delete groups[chatId];
+        await write({
+          version: data.version || 1,
+          groups,
+        });
+        return true;
       });
-      return true;
     },
     getStorePath: () => storePath,
   };

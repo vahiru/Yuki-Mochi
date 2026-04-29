@@ -704,7 +704,22 @@ export function createMessageGateway(
     }
   };
 
-  const triggeredMessageIds = new Set<number>();
+  const triggeredMessageIds = new Map<number, number>();
+  const TRIGGERED_IDS_MAX = 50_000;
+  const TRIGGERED_IDS_PRUNE_AGE_MS = 60 * 60 * 1000;
+
+  const pruneTriggeredIds = () => {
+    if (triggeredMessageIds.size <= TRIGGERED_IDS_MAX) return;
+    const cutoff = Date.now() - TRIGGERED_IDS_PRUNE_AGE_MS;
+    for (const [id, ts] of triggeredMessageIds) {
+      if (ts < cutoff) triggeredMessageIds.delete(id);
+    }
+    if (triggeredMessageIds.size > TRIGGERED_IDS_MAX) {
+      const sorted = [...triggeredMessageIds.entries()].sort((a, b) => a[1] - b[1]);
+      const toRemove = sorted.slice(0, triggeredMessageIds.size - TRIGGERED_IDS_MAX);
+      for (const [id] of toRemove) triggeredMessageIds.delete(id);
+    }
+  };
 
   const normalizer = createEventNormalizer({
     mergeWindowMs: options.mergeWindowMs,
@@ -747,7 +762,8 @@ export function createMessageGateway(
       if (triggeredMessageIds.has(rawMessage.messageId)) {
         return;
       }
-      triggeredMessageIds.add(rawMessage.messageId);
+      triggeredMessageIds.set(rawMessage.messageId, Date.now());
+      pruneTriggeredIds();
       await flushRecordAndTrigger(rawMessage, decision);
     })().catch((error) => {
       console.error("message gateway handler failed:", error);
@@ -772,7 +788,8 @@ export function createMessageGateway(
       if (triggeredMessageIds.has(editedMessage.messageId)) {
         return;
       }
-      triggeredMessageIds.add(editedMessage.messageId);
+      triggeredMessageIds.set(editedMessage.messageId, Date.now());
+      pruneTriggeredIds();
       await flushRecordAndTrigger(editedMessage, decision);
     })().catch((error) => {
       console.error("message gateway edited handler failed:", error);

@@ -3,7 +3,7 @@ set -euo pipefail
 export PATH=/root/.bun/bin:$PATH
 
 echo '[app] Starting bun install...'
-bun install --frozen-lockfile || bun install
+bun install --frozen-lockfile
 
 vfs_bin='/opt/artifacts/memory-vfs'
 vfs_socket='/run/kairos-runtime/sockets/kairos-runtime-vfs.sock'
@@ -52,7 +52,8 @@ export EMBED_MODEL="${EMBED_MODEL:-${OLLAMA_EMBED_MODEL:-qwen3-embedding:0.6b}}"
 export VFS_LISTEN="unix://$vfs_socket" && "$vfs_bin" &
 vfs_pid=$!
 
-for i in {1..120}; do
+vfs_timeout="${VFS_READY_TIMEOUT_SEC:-120}"
+for i in $(seq 1 "$vfs_timeout"); do
   if [ -S "$vfs_socket" ]; then
     echo '[app] memory-vfs ready'
     break

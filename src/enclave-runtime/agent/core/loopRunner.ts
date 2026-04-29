@@ -5,6 +5,8 @@ import {
   type AgentTool,
 } from "@mariozechner/pi-agent-core";
 import type { Message, Model } from "@mariozechner/pi-ai";
+import fs from "node:fs/promises";
+import nodePath from "node:path";
 import { createLlmFetcher, getLLMHeaders } from "../../../utils/llm-adapter";
 import { consumePendingEvolutedTool } from "../tools/evolute";
 
@@ -305,7 +307,15 @@ function extractSendFilePayload(result: unknown): {
   };
 }
 
-import fs from "node:fs/promises";
+
+const ALLOWED_LOCAL_IMAGE_DIRS = ["/tmp/kairos-vision"];
+
+function isAllowedLocalPath(filePath: string): boolean {
+  const resolved = nodePath.resolve(filePath);
+  return ALLOWED_LOCAL_IMAGE_DIRS.some(
+    (dir) => resolved === dir || resolved.startsWith(`${dir}/`)
+  );
+}
 
 async function downloadImageAsBase64(url: string): Promise<string | null> {
   try {
@@ -314,6 +324,10 @@ async function downloadImageAsBase64(url: string): Promise<string | null> {
 
     if (url.startsWith("file://")) {
       const filePath = url.slice(7);
+      if (!isAllowedLocalPath(filePath)) {
+        console.warn("[vision] blocked local file outside allowed dirs:", filePath);
+        return null;
+      }
       buf = await fs.readFile(filePath);
       contentType = detectImageMime(buf, null, url);
     } else if (/^https?:\/\//i.test(url)) {
@@ -322,7 +336,10 @@ async function downloadImageAsBase64(url: string): Promise<string | null> {
       buf = Buffer.from(await res.arrayBuffer());
       contentType = detectImageMime(buf, res.headers.get("content-type"), url);
     } else {
-      // Userbot may pass plain local paths (for example /tmp/kairos-vision/xxx.jpg).
+      if (!isAllowedLocalPath(url)) {
+        console.warn("[vision] blocked local file outside allowed dirs:", url);
+        return null;
+      }
       buf = await fs.readFile(url);
       contentType = detectImageMime(buf, null, url);
     }
@@ -339,7 +356,8 @@ function detectImageMime(buf: Buffer, headerType: string | null, url: string): s
   if (buf[0] === 0xFF && buf[1] === 0xD8) return "image/jpeg";
   if (buf[0] === 0x89 && buf[1] === 0x50) return "image/png";
   if (buf[0] === 0x47 && buf[1] === 0x49) return "image/gif";
-  if (buf[0] === 0x52 && buf[1] === 0x49) return "image/webp";
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf.length >= 12 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return "image/webp";
 
   if (headerType && headerType.startsWith("image/")) return headerType;
 
@@ -561,7 +579,7 @@ function replaceLastPhotoPlaceholder(content: string, replacement: string): stri
 function appendVisionDescription(content: string, replacement: string): string {
   const trailingWhitespace = content.match(/\s*$/)?.[0] ?? "";
   const body = content.slice(0, content.length - trailingWhitespace.length);
-  const separator = body.trim().length === 0 ? "\n  " : "\n  ";
+  const separator = "\n  ";
   return `${body}${separator}${replacement}${trailingWhitespace}`;
 }
 

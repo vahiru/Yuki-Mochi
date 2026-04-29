@@ -36,7 +36,7 @@ export function createWriteFileSafeTool(): AgentTool<any, WriteFileSafeDetails> 
       if (params.content.length > MAX_CONTENT_CHARS) {
         throw new Error(`Content too large. Max characters: ${MAX_CONTENT_CHARS}.`);
       }
-      const absolutePath = resolveSafePath(params.path);
+      const absolutePath = await resolveSafePath(params.path);
       const mode: "overwrite" | "append" = params.mode ?? "overwrite";
       await mkdir(dirname(absolutePath), { recursive: true });
       await writeFile(absolutePath, params.content, {

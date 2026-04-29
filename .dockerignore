@@ -10,3 +10,5 @@ data
 .memoh-debug
 __pycache__
 .venv
+.env*
+.tmp

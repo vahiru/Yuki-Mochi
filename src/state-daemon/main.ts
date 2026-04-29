@@ -49,6 +49,7 @@ const enclaveClient = createGrpcEnclaveClient({
 
 console.log(`[state-daemon] AGENT_ENCLAVE_TARGET=${AGENT_ENCLAVE_TARGET}`);
 
+// Survive terminal detach without terminating.
 process.on("SIGHUP", () => {});
 
 const userRoles = createUserRolesStore();
@@ -81,17 +82,24 @@ const gateway = createMessageGateway({
   },
 });
 
-process.on("SIGINT", () => {
-  gateway.stop();
-  telegram.stop();
-  process.exit(0);
-});
+let shuttingDown = false;
+const SHUTDOWN_TIMEOUT_MS = 10_000;
 
-process.on("SIGTERM", () => {
+const gracefulShutdown = () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log("[state-daemon] Shutting down...");
   gateway.stop();
   telegram.stop();
+  setTimeout(() => {
+    console.warn("[state-daemon] Forced exit after timeout.");
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS).unref();
   process.exit(0);
-});
+};
+
+process.on("SIGINT", gracefulShutdown);
+process.on("SIGTERM", gracefulShutdown);
 
 telegram.start().then(
   () => {

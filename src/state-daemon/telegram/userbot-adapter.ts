@@ -54,7 +54,9 @@ export interface UserBotAdapterOptions {
 export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAdapter {
   const client = new TelegramClient(new StringSession(options.sessionString || ""), options.apiId, options.apiHash, { connectionRetries: 10, useWSS: false, autoReconnect: true });
   const sentMessageIds = new Set<string>();
+  const SENT_IDS_MAX = 10_000;
   const messageAuthorByChat = new Map<number, Map<number, string>>();
+  const AUTHOR_PER_CHAT_MAX = 5_000;
   const messagePreviewByChat = new Map<
     number,
     Map<number, { displayName: string | null; usernameHandle: string | null; previewText: string | null }>
@@ -243,6 +245,10 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
 
   const rememberSentMessage = (chatId: number, messageId: number): void => {
     sentMessageIds.add(sentMessageKey(chatId, messageId));
+    if (sentMessageIds.size > SENT_IDS_MAX) {
+      const first = sentMessageIds.values().next().value;
+      if (first !== undefined) sentMessageIds.delete(first);
+    }
   };
 
   const hasSentMessage = (chatId: number, messageId: number): boolean => {
@@ -264,6 +270,10 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
       messageAuthorByChat.set(chatId, bucket);
     }
     bucket.set(messageId, normalized);
+    if (bucket.size > AUTHOR_PER_CHAT_MAX) {
+      const firstKey = bucket.keys().next().value;
+      if (firstKey !== undefined) bucket.delete(firstKey);
+    }
   };
 
   const getRememberedMessageAuthor = (chatId: number, messageId: number): string | null => {
@@ -290,6 +300,10 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
       usernameHandle: normalizeUsernameHandle(usernameHandle ?? undefined),
       previewText: normalizeReplyPreviewText(previewText),
     });
+    if (bucket.size > AUTHOR_PER_CHAT_MAX) {
+      const firstKey = bucket.keys().next().value;
+      if (firstKey !== undefined) bucket.delete(firstKey);
+    }
   };
 
   const getRememberedMessagePreview = (

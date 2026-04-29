@@ -110,7 +110,9 @@ export function createTelegramAdapter(
 ): TelegramAdapter {
   const bot = new Bot(token);
   const messages: TelegramMessage[] = [];
+  const MESSAGES_MAX = 10_000;
   const messageAuthorByChat = new Map<number, Map<number, string>>();
+  const AUTHOR_PER_CHAT_MAX = 5_000;
   const streams = new Map<number, StreamState>();
   const typingIntervals = new Map<number, ReturnType<typeof setInterval>>();
   const pendingMediaGroups = new Map<
@@ -242,6 +244,10 @@ export function createTelegramAdapter(
       messageAuthorByChat.set(chatId, bucket);
     }
     bucket.set(messageId, normalized);
+    if (bucket.size > AUTHOR_PER_CHAT_MAX) {
+      const firstKey = bucket.keys().next().value;
+      if (firstKey !== undefined) bucket.delete(firstKey);
+    }
   };
 
   const getRememberedMessageAuthor = (chatId: number, messageId: number): string | null => {
@@ -407,7 +413,9 @@ export function createTelegramAdapter(
     const hydrated = hydrateReplyMetadata(message);
     rememberMessageAuthorsFromPayload(hydrated);
     messages.push(hydrated);
-    for (const handler of messageHandlers) {
+    if (messages.length > MESSAGES_MAX) {
+      messages.splice(0, messages.length - MESSAGES_MAX);
+    }
       void Promise.resolve(handler(hydrated)).catch((error) => {
         console.error("telegram onMessage handler failed:", error);
       });
@@ -1368,13 +1376,35 @@ async function resolvePhotoUrlsByFileIds(
     try {
       const file = await bot.api.getFile(fileId);
       if (file.file_path) {
-        urls.push(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+        const localPath = await downloadBotFileToLocal(token, file.file_path, fileId);
+        urls.push(localPath);
       }
     } catch (error) {
       console.error("resolvePhotoUrl failed for fileId:", fileId, error);
     }
   }
   return urls;
+}
+
+async function downloadBotFileToLocal(
+  token: string,
+  filePath: string,
+  fileId: string
+): Promise<string> {
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  const dir = "/tmp/kairos-vision";
+  await fs.mkdir(dir, { recursive: true });
+  const ext = path.extname(filePath) || ".jpg";
+  const localPath = path.join(dir, `${fileId.replace(/[^a-zA-Z0-9_-]/g, "_")}${ext}`);
+  const url = `https://api.telegram.org/file/bot${token}/${filePath}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`download failed (${response.status})`);
+  }
+  const bytes = await response.arrayBuffer();
+  await fs.writeFile(localPath, Buffer.from(bytes));
+  return localPath;
 }
 
 function splitMediaItemsByType(

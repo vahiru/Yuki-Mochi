@@ -6,7 +6,9 @@ import { getSafeToolsRoot } from "./pathSafety";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 8_000;
+const MAX_BUFFER_CHARS = MAX_OUTPUT_CHARS * 2;
 
+// Defense-in-depth blocklist. Not a sandbox — real isolation comes from containerd.
 const FORBIDDEN_PATTERNS: RegExp[] = [
   /\brm\b/i,
   /\bsudo\b/i,
@@ -20,8 +22,32 @@ const FORBIDDEN_PATTERNS: RegExp[] = [
   /\bkill(?:all)?\b/i,
   /\bpkill\b/i,
   /\bpoweroff\b/i,
-  /\bcd\b/i,
+  /\beval\b/i,
+  /\bexec\b/i,
+  /\bsource\b/i,
+  /\bpython[23]?\b/i,
+  /\bperl\b/i,
+  /\bnode\b/i,
+  /\bcurl\b/i,
+  /\bwget\b/i,
   />\s*\//,
+];
+
+const SENSITIVE_ENV_PATTERNS = [
+  /^API_KEY$/i,
+  /^ARK_API_KEY$/i,
+  /^BOT_TOKEN$/i,
+  /^TELEGRAM_API_HASH$/i,
+  /^TELEGRAM_SESSION_STRING$/i,
+  /^DASHBOARD_AUTH_TOKEN$/i,
+  /^STATE_DAEMON_CLOUD_API_KEY$/i,
+  /^CUSTOM_EMOJI_TO_TEXT_API_KEY$/i,
+  /^VISION_API_KEY$/i,
+  /^QWEN_API_KEY$/i,
+  /SECRET/i,
+  /PASSWORD/i,
+  /TOKEN$/i,
+  /PRIVATE.?KEY/i,
 ];
 
 interface RunSafeBashDetails {
@@ -44,6 +70,18 @@ function validateCommand(command: string): void {
   }
 }
 
+function buildSanitizedEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    const isSensitive = SENSITIVE_ENV_PATTERNS.some((pattern) => pattern.test(key));
+    if (!isSensitive) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
 function clampTimeout(timeoutMs?: number): number {
   if (!timeoutMs || !Number.isFinite(timeoutMs)) {
     return DEFAULT_TIMEOUT_MS;
@@ -60,6 +98,7 @@ function truncate(text: string): string {
 
 export function createRunSafeBashTool(): AgentTool<any, RunSafeBashDetails> {
   const allowedWorkingDirectory = getSafeToolsRoot();
+  const sanitizedEnv = buildSanitizedEnv();
   return {
     name: "run_safe_bash",
     label: "Run safe bash command",
@@ -87,13 +126,14 @@ export function createRunSafeBashTool(): AgentTool<any, RunSafeBashDetails> {
       }>((resolve, reject) => {
         const child = spawn("bash", ["-lc", params.command], {
           cwd: allowedWorkingDirectory,
-          env: process.env,
+          env: sanitizedEnv,
         });
 
         let stdout = "";
         let stderr = "";
         let finished = false;
         let timedOut = false;
+        let bufferExceeded = false;
 
         const onAbort = () => {
           child.kill("SIGTERM");
@@ -108,10 +148,22 @@ export function createRunSafeBashTool(): AgentTool<any, RunSafeBashDetails> {
         }, timeoutMs);
 
         child.stdout.on("data", (chunk) => {
-          stdout += String(chunk);
+          if (!bufferExceeded) {
+            stdout += String(chunk);
+            if (stdout.length > MAX_BUFFER_CHARS) {
+              bufferExceeded = true;
+              child.stdout.destroy();
+            }
+          }
         });
         child.stderr.on("data", (chunk) => {
-          stderr += String(chunk);
+          if (!bufferExceeded) {
+            stderr += String(chunk);
+            if (stderr.length > MAX_BUFFER_CHARS) {
+              bufferExceeded = true;
+              child.stderr.destroy();
+            }
+          }
         });
         child.on("error", (error) => {
           if (finished) {

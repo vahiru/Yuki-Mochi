@@ -1,6 +1,8 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@mariozechner/pi-ai";
 
+const PROTECTED_TOOLS = new Set(["send_message", "send_file", "evolute", "apoptosis"]);
+
 interface ApoptosisDetails {
   targetToolName: string;
   stagedToolCallId: string;
@@ -22,6 +24,9 @@ export function createApoptosisTool(): AgentTool<any, ApoptosisDetails> {
       const targetToolName = params.toolName.trim();
       if (!targetToolName) {
         throw new Error("toolName is required.");
+      }
+      if (PROTECTED_TOOLS.has(targetToolName)) {
+        throw new Error(`Cannot remove core tool '${targetToolName}'.`);
       }
 
       return {
