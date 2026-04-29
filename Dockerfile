@@ -3,7 +3,7 @@ FROM debian:bookworm-slim AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 ENV BUN_INSTALL=/root/.bun
 ENV PATH=/root/.bun/bin:/root/.cargo/bin:${PATH}
-ARG APT_MIRROR=https://deb.debian.org/debian
+ARG APT_MIRROR=http://deb.debian.org/debian
 
 RUN set -eux; \
     rm -f /etc/apt/sources.list.d/debian.sources; \
@@ -47,7 +47,7 @@ RUN set -euo pipefail \
 FROM debian:bookworm-slim AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
-ARG APT_MIRROR=https://deb.debian.org/debian
+ARG APT_MIRROR=http://deb.debian.org/debian
 
 RUN set -eux; \
     rm -f /etc/apt/sources.list.d/debian.sources; \
