@@ -416,6 +416,7 @@ export function createTelegramAdapter(
     if (messages.length > MESSAGES_MAX) {
       messages.splice(0, messages.length - MESSAGES_MAX);
     }
+    for (const handler of messageHandlers) {
       void Promise.resolve(handler(hydrated)).catch((error) => {
         console.error("telegram onMessage handler failed:", error);
       });
