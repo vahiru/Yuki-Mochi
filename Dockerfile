@@ -65,6 +65,8 @@ RUN set -eux; \
       libssl3 \
       libprotobuf32 \
       python3 \
+      make \
+      g++ \
       unzip \
       docker.io; \
     rm -rf /var/lib/apt/lists/*
