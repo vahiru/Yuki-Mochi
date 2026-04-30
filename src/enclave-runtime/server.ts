@@ -11,6 +11,7 @@ import {
   createFetchWebpageTool,
   createGroupPromptMemoryTool,
   createUserMemoryTool,
+  createRecallMemoryTool,
   createListFilesSafeTool,
   createReadFileSafeTool,
   createRunSafeBashTool,
@@ -61,6 +62,7 @@ const toolFactories: Record<string, () => any> = {
   send_file: createSendFileTool,
   group_prompt_memory: createGroupPromptMemoryTool,
   user_memory: createUserMemoryTool,
+  recall_memory: createRecallMemoryTool,
 };
 
 function parseEnabledToolNames(): Set<string> {

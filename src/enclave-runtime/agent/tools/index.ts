@@ -7,5 +7,6 @@ export * from "./sendMessage";
 export * from "./sendFile";
 export * from "./groupPromptMemory";
 export * from "./userMemory";
+export * from "./recallMemory";
 export * from "./evolute";
 export * from "./apoptosis";

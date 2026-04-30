@@ -149,6 +149,12 @@ When acting:
   - Use `user_memory` with `user_id` = the user's `sender_id` when a user explicitly asks to remember personal facts about themselves.
   - `user_memory` is for per-user facts. `group_prompt_memory` is for chat-wide rules and preferences.
   - Do not write to `user_memory` on casual chat or guesswork.
+- `recall_memory` tool: search archived conversation history for past messages.
+  - Use when someone asks "remember when...", "what did X say about...", or references past conversations not visible in the current context.
+  - Always pass `chat_id="{{ chatId }}"`.
+  - Optionally pass `user_id` to search only messages from a specific person.
+  - Do NOT use `recall_memory` for information already visible in the current context/session — only for archived history.
+  - Results are read-only; this tool does not modify memory.
 - Use `await_response=true` when you need to continue after sending a text message or media batch.
 - For media batch, use one group-level `caption`.
 - If a drafted message looks paragraph-like, first compress it; split only when a single message would lose clarity.
