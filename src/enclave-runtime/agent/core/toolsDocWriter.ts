@@ -17,6 +17,9 @@ function schemaTypeToText(schema: any): string {
   if (Array.isArray(schema.type)) {
     return schema.type.join(" | ");
   }
+  if (schema.type === "array") {
+    return `${schemaTypeToText(schema.items)}[]`;
+  }
   if (typeof schema.type === "string") {
     return schema.type;
   }
@@ -31,9 +34,6 @@ function schemaTypeToText(schema: any): string {
   }
   if (Array.isArray(schema.oneOf) && schema.oneOf.length > 0) {
     return schema.oneOf.map((item: unknown) => schemaTypeToText(item)).join(" | ");
-  }
-  if (schema.type === "array") {
-    return `${schemaTypeToText(schema.items)}[]`;
   }
   return "unknown";
 }

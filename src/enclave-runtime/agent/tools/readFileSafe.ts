@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@mariozechner/pi-ai";
@@ -15,14 +15,20 @@ interface ReadFileSafeDetails {
   byteLength: number;
 }
 
-function resolveInsideAllowedRoot(inputPath: string): string {
+async function resolveInsideAllowedRoot(inputPath: string): Promise<string> {
   const allowedRoot = process.env.READ_FILE_SAFE_ROOT?.trim() || DEFAULT_ALLOWED_ROOT;
-  const resolved = path.resolve(allowedRoot, inputPath);
-  const relative = path.relative(allowedRoot, resolved);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+  const canonicalRoot = await realpath(allowedRoot);
+  const resolved = path.resolve(canonicalRoot, inputPath);
+  let canonicalResolved: string;
+  try {
+    canonicalResolved = await realpath(resolved);
+  } catch {
+    canonicalResolved = resolved;
+  }
+  if (canonicalResolved !== canonicalRoot && !canonicalResolved.startsWith(`${canonicalRoot}${path.sep}`)) {
     throw new Error("Path is outside allowed root.");
   }
-  return resolved;
+  return canonicalResolved;
 }
 
 export function createReadFileSafeTool(): AgentTool<any, ReadFileSafeDetails> {
@@ -37,7 +43,7 @@ export function createReadFileSafeTool(): AgentTool<any, ReadFileSafeDetails> {
       }),
     }),
     execute: async (_toolCallId, params) => {
-      const resolvedPath = resolveInsideAllowedRoot(params.path);
+      const resolvedPath = await resolveInsideAllowedRoot(params.path);
       const fileStat = await stat(resolvedPath);
       if (!fileStat.isFile()) {
         throw new Error("Target path is not a file.");

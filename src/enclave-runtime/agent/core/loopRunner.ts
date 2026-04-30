@@ -5,6 +5,8 @@ import {
   type AgentTool,
 } from "@mariozechner/pi-agent-core";
 import type { Message, Model } from "@mariozechner/pi-ai";
+import fs from "node:fs/promises";
+import nodePath from "node:path";
 import { createLlmFetcher, getLLMHeaders } from "../../../utils/llm-adapter";
 import { consumePendingEvolutedTool } from "../tools/evolute";
 
@@ -90,6 +92,9 @@ const DEFAULT_SEND_MESSAGE_MODE = "strict";
 const DEFAULT_STRICT_TEXT_FALLBACK = true;
 const VISION_DEBUG_ENABLED = /^(1|true|yes)$/i.test(
   (process.env.VISION_DEBUG ?? "").trim()
+);
+const ENCLAVE_DEBUG_ENABLED = /^(1|true|yes)$/i.test(
+  (process.env.ENCLAVE_DEBUG ?? "").trim()
 );
 const PHOTO_PLACEHOLDER_PATTERN = /\[photo(?:\s*x\d+)?\]/g;
 type SendMessageMode = "strict" | "compat";
@@ -305,7 +310,15 @@ function extractSendFilePayload(result: unknown): {
   };
 }
 
-import fs from "node:fs/promises";
+
+const ALLOWED_LOCAL_IMAGE_DIRS = ["/tmp/kairos-vision"];
+
+function isAllowedLocalPath(filePath: string): boolean {
+  const resolved = nodePath.resolve(filePath);
+  return ALLOWED_LOCAL_IMAGE_DIRS.some(
+    (dir) => resolved === dir || resolved.startsWith(`${dir}/`)
+  );
+}
 
 async function downloadImageAsBase64(url: string): Promise<string | null> {
   try {
@@ -314,6 +327,10 @@ async function downloadImageAsBase64(url: string): Promise<string | null> {
 
     if (url.startsWith("file://")) {
       const filePath = url.slice(7);
+      if (!isAllowedLocalPath(filePath)) {
+        console.warn("[vision] blocked local file outside allowed dirs:", filePath);
+        return null;
+      }
       buf = await fs.readFile(filePath);
       contentType = detectImageMime(buf, null, url);
     } else if (/^https?:\/\//i.test(url)) {
@@ -322,7 +339,10 @@ async function downloadImageAsBase64(url: string): Promise<string | null> {
       buf = Buffer.from(await res.arrayBuffer());
       contentType = detectImageMime(buf, res.headers.get("content-type"), url);
     } else {
-      // Userbot may pass plain local paths (for example /tmp/kairos-vision/xxx.jpg).
+      if (!isAllowedLocalPath(url)) {
+        console.warn("[vision] blocked local file outside allowed dirs:", url);
+        return null;
+      }
       buf = await fs.readFile(url);
       contentType = detectImageMime(buf, null, url);
     }
@@ -339,7 +359,8 @@ function detectImageMime(buf: Buffer, headerType: string | null, url: string): s
   if (buf[0] === 0xFF && buf[1] === 0xD8) return "image/jpeg";
   if (buf[0] === 0x89 && buf[1] === 0x50) return "image/png";
   if (buf[0] === 0x47 && buf[1] === 0x49) return "image/gif";
-  if (buf[0] === 0x52 && buf[1] === 0x49) return "image/webp";
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf.length >= 12 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return "image/webp";
 
   if (headerType && headerType.startsWith("image/")) return headerType;
 
@@ -561,7 +582,7 @@ function replaceLastPhotoPlaceholder(content: string, replacement: string): stri
 function appendVisionDescription(content: string, replacement: string): string {
   const trailingWhitespace = content.match(/\s*$/)?.[0] ?? "";
   const body = content.slice(0, content.length - trailingWhitespace.length);
-  const separator = body.trim().length === 0 ? "\n  " : "\n  ";
+  const separator = "\n  ";
   return `${body}${separator}${replacement}${trailingWhitespace}`;
 }
 
@@ -669,7 +690,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
     const sendMessageMode = resolveSendMessageMode();
     const strictTextFallbackEnabled = resolveStrictTextFallbackEnabled();
     try {
-      console.log("[loopRunner] calling agentLoop with messages:", messages.length);
+      if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] calling agentLoop with messages:", messages.length);
       const stream = agentLoop(
         messages as AgentMessage[],
         loopContext,
@@ -681,15 +702,15 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
         },
         abortController.signal
       );
-      console.log("[loopRunner] agentLoop returned stream");
+      if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] agentLoop returned stream");
 
       for await (const event of stream) {
-        console.log("[loopRunner] event:", event.type, event);
+        if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] event:", event.type);
         if (event.type === "message_update") {
           const assistantEvent = event.assistantMessageEvent;
           if (assistantEvent.type === "text_delta" && assistantEvent.delta) {
             currentMessageTextBuffer += assistantEvent.delta;
-            console.log("[loopRunner] text_delta:", assistantEvent.delta);
+            if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] text_delta:", assistantEvent.delta);
             continue;
           }
           if (assistantEvent.type === "text_end" && assistantEvent.content) {
@@ -709,10 +730,10 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
         }
 
         if (event.type === "message_end") {
-          console.log("[loopRunner] message_end, buffer:", currentMessageTextBuffer, "hasToolCall:", currentMessageHasToolCall);
+          if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] message_end, buffer:", currentMessageTextBuffer, "hasToolCall:", currentMessageHasToolCall);
           const message = event.message as AgentEndMessage;
           if (message.role !== "assistant") {
-            console.log("[loopRunner] message_end: role is not assistant:", message.role);
+            if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] message_end: role is not assistant:", message.role);
             currentMessageHasToolCall = false;
             currentMessageTextBuffer = "";
             continue;
@@ -720,7 +741,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
           // 处理错误情况
           if (message.stopReason === "error") {
             const errorMsg = message.errorMessage || "Unknown error";
-            console.log("[loopRunner] message_end error:", errorMsg);
+            if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] message_end error:", errorMsg);
             globalMessageHasEmitted = true;
             yield {
               type: "message_update",
@@ -739,7 +760,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
                 .map((block) => block.text as string)
                 .join("");
             }
-            console.log("[loopRunner] message_end output:", output);
+            if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] message_end output:", output);
             if (output) {
               globalMessageHasEmitted = true;
               yield {
@@ -825,7 +846,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
           if (toolsChanged) {
             syncToolsInPlace(loopContext, options.getCurrentTools());
           }
-          console.log("tool_execution_end", event.result);
+          if (ENCLAVE_DEBUG_ENABLED) console.log("tool_execution_end", event.toolName);
           yield {
             type: "tool_execution_end",
             toolName: event.toolName,
@@ -836,7 +857,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
         }
 
         if (event.type === "tool_execution_start") {
-          console.log("tool_execution_start", event);
+          if (ENCLAVE_DEBUG_ENABLED) console.log("tool_execution_start", event.toolName);
           yield {
             type: "tool_execution_start",
             toolName: event.toolName,
@@ -849,7 +870,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
       if (!globalMessageHasEmitted && !messageSentViaTool) {
         const newMessages = await stream.result();
         const fallbackText = extractAssistantTextFromMessages(newMessages);
-        console.log(
+        if (ENCLAVE_DEBUG_ENABLED) console.log(
           `[loopRunner] fallback extraction: found=${Boolean(fallbackText)} length=${fallbackText.length}`
         );
         const canEmitFallbackText =

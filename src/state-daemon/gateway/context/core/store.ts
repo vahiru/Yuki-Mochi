@@ -86,15 +86,13 @@ export function createInMemoryContextStore(
   const embedder = options.embedder ?? createDenseEmbedder();
   const similarityThreshold = options.similarityThreshold ?? 0.60;
   const shortMessageThreshold = options.shortMessageThreshold ?? 0.45;
-  // const alphaTime = options.alphaTime ?? 0.25;
-  // const lambda = options.lambda ?? 1 / (2 * 60 * 1000);
   const gammaTime = 0.85;
   const lambda = options.lambda ?? 0.0022;
   const alphaCenter = options.alphaCenter ?? 0.4;
   const maxContextMessages = options.maxContextMessages ?? 250;
   const maxSessionsPerChat = options.maxSessionsPerChat ?? 32;
   const chatControlBlocks = new Map<number, ChatControlBlock>();
-  // const sessionDecider = options.sessionDecider ?? decideSessionByLlm;
+  const chatLocks = new Map<number, Promise<void>>();
   const sessionDecider = options.sessionDecider ?? decideSessionByReranker;
   const localModel = options.localModel;
   const cloudModel = options.cloudModel;
@@ -104,7 +102,6 @@ export function createInMemoryContextStore(
 
   return {
     ingestMessage: async ({ message }) => {
-      // console.log("ingestMessage", message);
       const now = message.timestamp;
       const chatId = message.chatId;
       const messageId = message.messageId;
@@ -112,7 +109,9 @@ export function createInMemoryContextStore(
       const materializedMessage = materializeMessageActors(ccb, message, now);
       const isShortMessage = materializedMessage.context.length <= SHORT_MESSAGE_LENGTH;
       refreshUsernameAlias(ccb, materializedMessage, now);
-      void downgradeExpiredSessions(ccb, now, SESSION_LRU_EXPIRE_MS, archiverService);
+      await serializePerChat(chatLocks, chatId, () =>
+        downgradeExpiredSessions(ccb, now, SESSION_LRU_EXPIRE_MS, archiverService)
+      );
       const existing = ccb.messageNodes.get(messageId);
       if (existing) {
         existing.message = materializedMessage;
@@ -313,8 +312,9 @@ export function createInMemoryContextStore(
           alphaCenter
         );
       }
-      // await updateTopicSummary(ccb, targetSession, cloudModel);
-      void updateTopicSummary(ccb, targetSession, cloudModel).catch(error => console.error("updateTopicSummary error", error));
+      serializePerChat(chatLocks, chatId, () =>
+        updateTopicSummary(ccb, targetSession, cloudModel)
+      ).catch(error => console.error("updateTopicSummary error", error));
     },
     getContextByAnchor: ({ chatId, messageId }) => {
       const ccb = chatControlBlocks.get(chatId);
@@ -356,11 +356,17 @@ export function createInMemoryContextStore(
           ? allSessionMessages
           : allSessionMessages.slice(allSessionMessages.length - maxContextMessages);
       const sessionMessageIds = new Set<number>(sessionMessages.map((item) => item.messageId));
-      let recentMessages = Array.from(ccb.messageNodes.values())
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .filter((item) => !sessionMessageIds.has(item.messageId))
-        .slice(0, RECENT_CHAT_MESSAGES_COUNT)
-        .sort((a, b) => a.timestamp - b.timestamp)
+      const allNodes = Array.from(ccb.messageNodes.values())
+        .sort((a, b) => b.timestamp - a.timestamp);
+      const topRecent: MessageNode[] = [];
+      for (const item of allNodes) {
+        if (topRecent.length >= RECENT_CHAT_MESSAGES_COUNT) break;
+        if (!sessionMessageIds.has(item.messageId)) {
+          topRecent.push(item);
+        }
+      }
+      let recentMessages = topRecent
+        .reverse()
         .map((item) => item.message);
       if (anchorReplyTarget) {
         const replyMessage = anchorReplyTarget.message;
@@ -1424,7 +1430,6 @@ function pickBestSession(
       continue;
     }
     const score = scoreMessageToSession(vector, session, now, alphaTime, lambda);
-    console.log(session.sessionId, score);
     if (!winner || score > winner.score) {
       winner = { session, score };
     }
@@ -1521,25 +1526,18 @@ function scoreMessageToSession(
   gammaTime: number,
   lambda: number
 ): number {
-  // const cosineScore = cosine(vector, session.centerVector);
-  // const deltaT = Math.max(0, (now - session.lastActiveTime) / 3600000);
-  // // const timeScore = alphaTime * Math.exp(-lambda * deltaT);
-  // // return cosineScore + timeScore;
-  // const timeWeight = Math.exp(-lambda * deltaT);
-  // const timeScore = Math.pow(timeWeight, gammaTime);
-  // return timeScore * cosineScore;
   const centerScore =
     scoreMessage(vector, session.centerVector, now, session.lastActiveTime, gammaTime, lambda) ?? 0.999;
   const recentScore =
     scoreMessage(vector, session.recentVector, now, session.lastActiveTime, gammaTime, lambda) ?? 0;
   return Math.max(centerScore, recentScore);
-  // return Math.max(scoreMessage(vector, session.centerVector, now, session.lastActiveTime, gammaTime, lambda), scoreMessage(vector, session.centerVector, now, session.lastActiveTime, gammaTime, lambda));
 }
 
 function cosine(vecA: number[], vecB: number[]): number {
   const dot = vecA.reduce((sum, a, i) => sum + a * vecB[i], 0);
   const normA = Math.sqrt(vecA.reduce((sum, a) => sum + a * a, 0));
   const normB = Math.sqrt(vecB.reduce((sum, b) => sum + b * b, 0));
+  if (normA * normB === 0) return 0;
   return dot / (normA * normB);
 }
 
@@ -1813,21 +1811,15 @@ Output only the new topic summary, no explanation:`;
   session.topicSummary = text.trim().slice(0, 80) || session.topicSummary;
   session.lastSummarizedMessageCount = from + TOPIC_SUMMARY_CLOUD_BATCH;
 }
-// function evictOldestSessionIfNeeded(ccb: ChatControlBlock, maxSessionsPerChat: number): void {
-//   if (ccb.sessionControlBlocks.size < maxSessionsPerChat) {
-//     return;
-//   }
-//   let oldest: SessionControlBlock | null = null;
-//   for (const session of ccb.sessionControlBlocks.values()) {
-//     if (!oldest || session.lastActiveTime < oldest.lastActiveTime) {
-//       oldest = session;
-//     }
-//   }
-//   if (!oldest) {
-//     return;
-//   }
-//   ccb.sessionControlBlocks.delete(oldest.sessionId);
-//   for (const messageId of oldest.messageIds) {
-//     ccb.messageNodes.delete(messageId);
-//   }
-// }
+
+async function serializePerChat(
+  locks: Map<number, Promise<void>>,
+  chatId: number,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const prev = locks.get(chatId) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  locks.set(chatId, next);
+  await next;
+}
+

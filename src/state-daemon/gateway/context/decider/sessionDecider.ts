@@ -142,7 +142,6 @@ export async function decideSessionByReranker(input: {
       return { action: "create" };
     }
 
-    console.log("scores", scores);
     const winner = pickBestScore(scores);
     if (!winner || winner.score < threshold) {
       return { action: "create" };

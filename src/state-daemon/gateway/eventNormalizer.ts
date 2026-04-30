@@ -48,7 +48,7 @@ export function createEventNormalizer(
   ) => {
     const aggregate: FlushedAggregate = {
       normalizedMessageId: normalizedMessage.messageId,
-      sourceMessages: sourceMessages.map((message) => ({ ...message })),
+      sourceMessages,
     };
     flushedAggregates.set(normalizedMessage.messageId, aggregate);
     for (const source of aggregate.sourceMessages) {
@@ -63,7 +63,7 @@ export function createEventNormalizer(
     }
     clearTimeout(pending.timer);
     buckets.delete(key);
-    const sourceMessages = pending.messages.map((message) => ({ ...message }));
+    const sourceMessages = pending.messages;
     const merged = buildMergedMessage(sourceMessages);
     rememberFlushedAggregate(sourceMessages, merged);
     return merged;
@@ -262,6 +262,18 @@ function buildMergedMessage(messages: TelegramMessage[]): TelegramMessage {
     messages.find((item) => item.metadata.isReplyToMe) ??
     messages.find((item) => item.metadata.replyToMessageId !== null);
 
+  let usernameHandle: string | null = null;
+  let senderEntityType = last.metadata.senderEntityType;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (!usernameHandle && messages[i].metadata.usernameHandle) {
+      usernameHandle = messages[i].metadata.usernameHandle;
+    }
+    if (senderEntityType === last.metadata.senderEntityType && messages[i].metadata.senderEntityType) {
+      senderEntityType = messages[i].metadata.senderEntityType;
+    }
+    if (usernameHandle) break;
+  }
+
   return {
     ...last,
     context: mergedContext,
@@ -278,16 +290,8 @@ function buildMergedMessage(messages: TelegramMessage[]): TelegramMessage {
       mentions: mergedMentions,
       mentionUserIds: mergedMentionUserIds,
       isSelf: messages.some((item) => item.metadata.isSelf === true),
-      usernameHandle:
-        [...messages]
-          .reverse()
-          .map((item) => item.metadata.usernameHandle)
-          .find((item) => Boolean(item)) ?? null,
-      senderEntityType:
-        [...messages]
-          .reverse()
-          .map((item) => item.metadata.senderEntityType)
-          .find((item) => Boolean(item)) ?? last.metadata.senderEntityType,
+      usernameHandle: usernameHandle ?? null,
+      senderEntityType,
     },
   };
 }

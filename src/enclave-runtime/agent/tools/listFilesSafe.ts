@@ -44,7 +44,7 @@ export function createListFilesSafeTool(): AgentTool<any, ListFilesSafeDetails> 
     }),
     execute: async (_toolCallId, params) => {
       const rootRelativePath = params.path ?? ".";
-      const absolutePath = resolveSafePath(rootRelativePath);
+      const absolutePath = await resolveSafePath(rootRelativePath);
       const recursive = params.recursive ?? false;
       const contains = params.contains?.trim().toLowerCase();
       const maxResults = Math.min(
@@ -61,7 +61,7 @@ export function createListFilesSafeTool(): AgentTool<any, ListFilesSafeDetails> 
         }
         const entries = await readdir(currentDir, { withFileTypes: true });
         for (const entry of entries) {
-          const entryPath = resolveSafePath(relative(safeToolsRoot, join(currentDir, entry.name)));
+          const entryPath = await resolveSafePath(relative(safeToolsRoot, join(currentDir, entry.name)));
           const rel = relative(safeToolsRoot, entryPath) || ".";
           const rendered = entry.isDirectory() ? `${rel}/` : rel;
           if (!contains || rendered.toLowerCase().includes(contains)) {

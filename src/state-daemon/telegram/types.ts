@@ -32,7 +32,8 @@ export interface StreamState {
   statusText: string | null;
   lastRenderedText: string;
   lastFlushAtMs: number;
-  chunks: string[];
+  buffer: string;
+  chunkCount: number;
 }
 
 export interface TelegramAdapter {

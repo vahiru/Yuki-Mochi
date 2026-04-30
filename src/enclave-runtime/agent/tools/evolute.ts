@@ -25,7 +25,17 @@ const KEEP_EVOLUTE_MODULES = process.env.EVOLUTE_KEEP_MODULES === "1";
 const EVOLUTE_MANAGED_DEPS_FILE = join(EVOLUTE_MODULE_DIR, "package.json");
 const BUILTIN_PLAIN_NAMES = new Set(builtinModules.map((name) => name.replace(/^node:/, "")));
 const ESM_LEXER_READY = initEsmLexer;
-const pendingEvolutedTools = new Map<string, AgentTool<any>>();
+const pendingEvolutedTools = new Map<string, { tool: AgentTool<any>; createdAt: number }>();
+const PENDING_TOOL_TTL_MS = 60_000;
+
+const SENSITIVE_ENV_PREFIXES = [
+  "API_KEY", "ARK_API_KEY", "BOT_TOKEN", "TELEGRAM_API_HASH",
+  "TELEGRAM_SESSION_STRING", "DASHBOARD_AUTH_TOKEN",
+  "STATE_DAEMON_CLOUD_API_KEY", "CUSTOM_EMOJI_TO_TEXT_API_KEY",
+  "VISION_API_KEY", "QWEN_API_KEY",
+];
+
+const SAFE_PACKAGE_NAME_PATTERN = /^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i;
 const requireResolver = createRequire(import.meta.url);
 
 function getToolCodeDirFromEnv(): string {
@@ -241,6 +251,15 @@ async function ensureDependencies(packageNames: string[], workDir: string): Prom
   if (packageNames.length === 0) {
     return;
   }
+  const allowedPackages = parseAllowedPackages();
+  for (const name of packageNames) {
+    if (!SAFE_PACKAGE_NAME_PATTERN.test(name)) {
+      throw new Error(`Invalid package name rejected: ${name}`);
+    }
+    if (allowedPackages && !allowedPackages.has(name)) {
+      throw new Error(`Package '${name}' is not in EVOLUTE_ALLOWED_PACKAGES allowlist.`);
+    }
+  }
   const missingDependencies = packageNames.filter(
     (name) => !isDependencyResolvable(name, workDir)
   );
@@ -266,6 +285,12 @@ async function ensureDependencies(packageNames: string[], workDir: string): Prom
       `Failed installing dynamic tool deps (${missingDependencies.join(", ")}): ${toErrorMessage(error)}`
     );
   }
+}
+
+function parseAllowedPackages(): Set<string> | null {
+  const raw = process.env.EVOLUTE_ALLOWED_PACKAGES?.trim();
+  if (!raw) return null;
+  return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
 }
 
 async function ensureEvolutePackageManifest(workDir: string): Promise<void> {
@@ -322,11 +347,22 @@ async function writeDependencySnapshot(
 }
 
 export function consumePendingEvolutedTool(toolCallId: string): AgentTool<any> | undefined {
-  const tool = pendingEvolutedTools.get(toolCallId);
-  if (tool) {
+  purgeStalePendingTools();
+  const entry = pendingEvolutedTools.get(toolCallId);
+  if (entry) {
     pendingEvolutedTools.delete(toolCallId);
+    return entry.tool;
   }
-  return tool;
+  return undefined;
+}
+
+function purgeStalePendingTools(): void {
+  const now = Date.now();
+  for (const [id, entry] of pendingEvolutedTools) {
+    if (now - entry.createdAt > PENDING_TOOL_TTL_MS) {
+      pendingEvolutedTools.delete(id);
+    }
+  }
 }
 
 export function createEvoluteTool(): AgentTool<any, EvoluteDetails> {
@@ -388,7 +424,7 @@ export function createEvoluteTool(): AgentTool<any, EvoluteDetails> {
     }),
     execute: async (toolCallId, params) => {
       const dynamicTool = await compileToolFromCode(params.code);
-      pendingEvolutedTools.set(toolCallId, dynamicTool);
+      pendingEvolutedTools.set(toolCallId, { tool: dynamicTool, createdAt: Date.now() });
       return {
         content: [
           {

@@ -64,6 +64,12 @@ services:
       AGENT_ENCLAVE_TARGET: "unix:///run/kairos-runtime/sockets/kairos-runtime-enclave.sock"
       MEMORY_VFS_TARGET: "unix:///run/kairos-runtime/sockets/kairos-runtime-vfs.sock"
     command: /workspace/entrypoint.sh
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/kairos-runtime/sockets/kairos-runtime-vfs.sock"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 
   dashboard:
     build:
@@ -72,13 +78,13 @@ services:
     working_dir: /workspace/src/dashboard
     user: root
     ports:
-      - "18080:8080"
+      - "127.0.0.1:18080:8080"
     volumes:
       - .:/workspace
       - /run/kairos-runtime:/run/kairos-runtime
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      DASHBOARD_AUTH_TOKEN: "${DASHBOARD_AUTH_TOKEN:-yukimochi0721}"
+      DASHBOARD_AUTH_TOKEN: "${DASHBOARD_AUTH_TOKEN:?DASHBOARD_AUTH_TOKEN must be set}"
       MEMORY_FILES_ROOT: "/workspace/.runtime/memory_files"
     command: >
       bash -lc "
@@ -105,7 +111,7 @@ services:
       API_KEY: "${API_KEY:-}"
     command: >
       bash -lc "
-      cargo run --manifest-path src/sandbox/Cargo.toml
+      cargo run --release --manifest-path src/sandbox/Cargo.toml
       "
     profiles:
       - sandbox

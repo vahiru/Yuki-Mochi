@@ -46,11 +46,11 @@ export function createOpenAICloudModel(
           return { text };
         } catch (error) {
           lastError = error;
-          const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-          await sleep(3000);
           if (attempt >= MAX_RETRIES) {
             break;
           }
+          const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+          await sleep(Math.min(1000 * Math.pow(2, attempt - 1), 16000));
         }
       }
 

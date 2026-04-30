@@ -273,13 +273,25 @@ function normalizeDisplayNameKey(value: string | null | undefined): string | nul
   return normalized ? normalized.toLowerCase() : null;
 }
 
+const displayNameRegexCache = new Map<string, RegExp>();
+const DISPLAY_NAME_REGEX_CACHE_MAX = 500;
+
 function containsDisplayNameReference(text: string, displayNameKey: string): boolean {
   if (displayNameKey.length < 2) {
     return false;
   }
   if (/^[a-z0-9_]+$/.test(displayNameKey)) {
-    const escaped = displayNameKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`).test(text);
+    let re = displayNameRegexCache.get(displayNameKey);
+    if (!re) {
+      if (displayNameRegexCache.size >= DISPLAY_NAME_REGEX_CACHE_MAX) {
+        const firstKey = displayNameRegexCache.keys().next().value;
+        if (firstKey !== undefined) displayNameRegexCache.delete(firstKey);
+      }
+      const escaped = displayNameKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      re = new RegExp(`(^|[^a-z0-9_])${escaped}([^a-z0-9_]|$)`);
+      displayNameRegexCache.set(displayNameKey, re);
+    }
+    return re.test(text);
   }
   return text.includes(displayNameKey);
 }

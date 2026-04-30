@@ -50,15 +50,6 @@ setEnvIfBlank("READ_FILE_SAFE_ROOT", WORKSPACE_ROOT);
 setEnvIfBlank("ENABLED_TOOLS", config.tools.enabled);
 console.log(`[enclave] MEMORY_FILES_ROOT=${process.env.MEMORY_FILES_ROOT}`);
 
-// const { createOpenAIEnclaveRuntime } = await import("./agent/core/openai");
-// const {
-//   createFetchWebpageTool,
-//   createListFilesSafeTool,
-//   createReadFileSafeTool,
-//   createRunSafeBashTool,
-//   createWriteFileSafeTool,
-// } = await import("./agent/tools");
-
 const toolFactories: Record<string, () => any> = {
   fetch_webpage: createFetchWebpageTool,
   run_safe_bash: createRunSafeBashTool,
@@ -157,7 +148,7 @@ function safeSerializeResult(result: unknown): string {
     return JSON.stringify({
       truncated: true,
       originalLength: raw.length,
-      preview: raw.slice(0, MAX_RESULT_JSON_LENGTH),
+      preview: `${raw.slice(0, MAX_RESULT_JSON_LENGTH)}...[truncated]`,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -353,8 +344,7 @@ function ensureUnixSocketPermissions(addr: string): void {
     return;
   }
   try {
-    // Allow host non-root client process to connect to sandbox-created socket.
-    chmodSync(socketPath, 0o666);
+    chmodSync(socketPath, 0o660);
   } catch (error) {
     console.warn("[enclave] failed to chmod unix socket:", error);
   }
