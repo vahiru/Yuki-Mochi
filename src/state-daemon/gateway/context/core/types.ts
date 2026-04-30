@@ -23,6 +23,8 @@ export interface SessionControlBlock {
   lastActiveTime: number;
   messageIds: Set<number>;
   rootMessageIds: Set<number>;
+  supplementaryRecallMessages: TelegramMessage[];
+  lastTopicDriftRecallTime: number;
 }
 
 export interface ParticipantState {
@@ -65,6 +67,14 @@ export interface ResolvedTarget {
   via: "reply" | "mention_user" | "mention_handle" | "display_name" | "pronoun";
 }
 
+export interface UserProfileSummary {
+  actorId: string;
+  displayName?: string;
+  preferences?: Record<string, unknown>;
+  techProjects?: Record<string, unknown>;
+  relations?: unknown[];
+}
+
 export interface ChatControlBlock {
   chatId: number;
   sessionControlBlocks: Map<string, SessionControlBlock>;
@@ -78,15 +88,18 @@ export interface ChatControlBlock {
   nextSessionSeq: number;
   lastExpirationCheckTime: number;
   lastActivityTime: number;
+  profileCacheByActor: Map<string, { profile: UserProfileSummary; expiresAt: number }>;
 }
 
 export interface ContextAnchorSnapshot {
   recentMessages: TelegramMessage[];
   sessionMessages: TelegramMessage[];
   targetMessages: TelegramMessage[];
+  supplementaryContext: TelegramMessage[];
   participants: ParticipantState[];
   identityEvents: ContextIdentityEvent[];
   resolvedTargets: ResolvedTarget[];
+  userProfiles?: UserProfileSummary[];
 }
 
 export interface ContextStore {
@@ -106,10 +119,12 @@ export interface ContextAssemblerBuildInput {
   contextMessages: TelegramMessage[];
   recentMessages: TelegramMessage[];
   targetMessages: TelegramMessage[];
+  supplementaryContext: TelegramMessage[];
   participants: ParticipantState[];
   identityEvents: ContextIdentityEvent[];
   resolvedTargets: ResolvedTarget[];
   systemPrompt: string;
+  userProfiles?: UserProfileSummary[];
 }
 
 export interface ContextAssembler {

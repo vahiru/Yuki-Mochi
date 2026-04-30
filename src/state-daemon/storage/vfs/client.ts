@@ -47,10 +47,32 @@ import type {
   WriteResponse,
 } from "./types";
 
+function parseFloatEnv(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseFloat(value.trim());
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 const MAX_GRPC_MESSAGE_BYTES = 16 * 1024 * 1024;
 const SEMANTIC_RESULT_MAX_MESSAGES = 6;
-const MIN_SEMANTIC_RESULT_SCORE = 0.45;
+const MIN_SEMANTIC_RESULT_SCORE = parseFloatEnv(
+  process.env.STATE_DAEMON_VFS_MIN_SEMANTIC_SCORE,
+  0.45,
+);
+const MIN_ACTOR_SEMANTIC_RESULT_SCORE = parseFloatEnv(
+  process.env.STATE_DAEMON_VFS_MIN_ACTOR_SEMANTIC_SCORE,
+  0.35,
+);
 const ACTOR_VIEW_MULTIPLIER = 6;
+const READ_CACHE_TTL_MS = 5 * 60 * 1000;
+const READ_CACHE_MAX_ENTRIES = 256;
+
+interface ReadCacheEntry {
+  response: ReadResponse;
+  expiresAt: number;
+}
 
 interface ExactSearchTarget {
   chatId: string;
@@ -109,6 +131,7 @@ export class MemoryVfsClient {
   private readonly sessionRole: string;
   private sessionKeyPromise: Promise<string> | null = null;
   private sessionKey: string | null = null;
+  private readonly readCache = new Map<string, ReadCacheEntry>();
 
   constructor(options: CreateMemoryVfsClientOptions = {}) {
     const rawTarget = options.target ?? getDefaultMemoryVfsTarget();
@@ -233,7 +256,7 @@ export class MemoryVfsClient {
         return { message, score };
       })
       .filter((item): item is { message: ChatMessage; score: number } => Boolean(item))
-      .filter((item) => item.score >= MIN_SEMANTIC_RESULT_SCORE)
+      .filter((item) => item.score >= MIN_ACTOR_SEMANTIC_RESULT_SCORE)
       .sort((a, b) => b.score - a.score);
 
     if (ranked.length === 0) {
@@ -272,6 +295,37 @@ export class MemoryVfsClient {
       query: input.query,
       limit: input.limit,
     });
+  }
+
+  async searchSummaries(input: {
+    chatId: string;
+    query: string;
+    limit?: number;
+  }): Promise<Array<{ sessionId: string; topicSummary: string; score: number }>> {
+    const chatId = input.chatId.trim();
+    const query = input.query.trim();
+    if (!chatId || !query) {
+      return [];
+    }
+    const limit = Math.max(1, input.limit ?? 5);
+    try {
+      const resp = await this.read({ path: `logos://memory/groups/${chatId}/summary` });
+      if (!resp.content) {
+        return [];
+      }
+      const entries = parseSummaryEntries(resp.content);
+      const scored = entries
+        .map((entry) => ({
+          ...entry,
+          score: scoreSemanticAcrossQueries(query, entry.topicSummary),
+        }))
+        .filter((entry) => entry.score >= MIN_SEMANTIC_RESULT_SCORE)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+      return scored;
+    } catch {
+      return [];
+    }
   }
 
   private async searchSemanticLike(request: SearchRequest): Promise<SearchResponse> {
@@ -399,36 +453,52 @@ export class MemoryVfsClient {
   }
 
   async write(request: WriteRequest): Promise<WriteResponse> {
-    // --- [PRESERVED] Old direct RPC ---
-    // return this.grpcClient.write(request, this.buildOptions());
-
     const uri = translatePath(request.path);
     await this.logosClient.write(
       { uri, content: request.content },
       await this.buildOptions(),
     );
+    this.invalidateReadCache(uri);
     return { success: true, errorMsg: "" };
   }
 
   async read(request: ReadRequest): Promise<ReadResponse> {
-    // --- [PRESERVED] Old direct RPC ---
-    // return this.grpcClient.read(request, this.buildOptions());
-
     const uri = translatePath(request.path);
+    const now = Date.now();
+    const cached = this.readCache.get(uri);
+    if (cached && cached.expiresAt > now) {
+      return cached.response;
+    }
     const resp = await this.logosClient.read({ uri }, await this.buildOptions());
-    return { success: true, content: resp.content, errorMsg: "" };
+    const response: ReadResponse = { success: true, content: resp.content, errorMsg: "" };
+    if (this.readCache.size >= READ_CACHE_MAX_ENTRIES) {
+      const firstKey = this.readCache.keys().next().value;
+      if (firstKey !== undefined) this.readCache.delete(firstKey);
+    }
+    this.readCache.set(uri, { response, expiresAt: now + READ_CACHE_TTL_MS });
+    return response;
   }
 
   async patch(request: PatchRequest): Promise<PatchResponse> {
-    // --- [PRESERVED] Old direct RPC ---
-    // return this.grpcClient.patch(request, this.buildOptions());
-
     const uri = translatePath(request.path);
     await this.logosClient.patch(
       { uri, partial: request.partialContent },
       await this.buildOptions(),
     );
+    this.invalidateReadCache(uri);
     return { success: true, errorMsg: "" };
+  }
+
+  invalidateReadCache(uriOrPrefix: string): void {
+    if (this.readCache.has(uriOrPrefix)) {
+      this.readCache.delete(uriOrPrefix);
+      return;
+    }
+    for (const key of this.readCache.keys()) {
+      if (key.startsWith(uriOrPrefix)) {
+        this.readCache.delete(key);
+      }
+    }
   }
 
   async archive(request: ArchiveRequest): Promise<ArchiveResponse> {
@@ -506,6 +576,23 @@ export class MemoryVfsClient {
         {
           uri: `logos://memory/groups/${request.chatId}/summary/short/${period}`,
           content: summaryJson,
+        },
+        options,
+      );
+    }
+
+    if (request.sessionId) {
+      const sessionMetaJson = JSON.stringify({
+        sessionId: request.sessionId,
+        topicSummary: request.abstractSummary || "",
+        centroidVector: request.centroidVector || [],
+        messageCount: request.messages.length,
+        archivedAt: new Date().toISOString(),
+      });
+      await this.logosClient.write(
+        {
+          uri: `logos://memory/groups/${request.chatId}/sessions/${request.sessionId}`,
+          content: sessionMetaJson,
         },
         options,
       );
@@ -879,7 +966,7 @@ function buildSemanticSearchQueries(query: string): string[] {
 
   const cjk = normalized.replace(/[^\u3400-\u9FFF]/g, "");
   if (cjk.length >= 2) {
-    const maxChunks = Math.min(8, cjk.length - 1);
+    const maxChunks = Math.min(12, cjk.length - 1);
     for (let i = 0; i < maxChunks; i += 1) {
       candidates.push(cjk.slice(i, i + 2));
     }
@@ -1014,4 +1101,31 @@ function normalizeGrpcTarget(target: string): string {
     return `unix://${normalized}`;
   }
   return normalized;
+}
+
+function parseSummaryEntries(
+  content: string,
+): Array<{ sessionId: string; topicSummary: string }> {
+  const results: Array<{ sessionId: string; topicSummary: string }> = [];
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as {
+        content?: string;
+        sessionId?: string;
+        topicSummary?: string;
+      };
+      const summary = parsed.topicSummary || parsed.content || "";
+      const sessionId = parsed.sessionId || "";
+      if (summary) {
+        results.push({ sessionId, topicSummary: summary });
+      }
+    } catch {
+      // skip unparseable lines
+    }
+  }
+  return results;
 }

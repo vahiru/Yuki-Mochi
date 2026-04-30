@@ -5,6 +5,7 @@ export {
   formatTimeNow,
   loadGroupPromptByChatId,
   loadSystemFilesFromMemory,
+  loadUserMemoriesByActorIds,
   resolveMemoryDir,
   resolveSendMessageMode,
 } from "./system";

@@ -11,6 +11,7 @@ import {
   type SessionSummary,
 } from "../decider/sessionDecider";
 import type { SearchResult } from "../../../storage/vfs";
+import { getSharedMemoryVfsClient, type MemoryVfsClient } from "../../../storage/vfs";
 import type {
   ChatControlBlock,
   ContextAnchorSnapshot,
@@ -21,6 +22,7 @@ import type {
   ResolvedTarget,
   SessionControlBlock,
   SessionStatus,
+  UserProfileSummary,
 } from "./types";
 import {
   buildMentionActorRefs,
@@ -38,6 +40,7 @@ import {
 export interface CreateInMemoryContextStoreOptions {
   embedder?: DenseEmbedder;
   contextSearcher?: ContextSearcher;
+  vfsClient?: MemoryVfsClient;
   similarityThreshold?: number;
   shortMessageThreshold?: number;
   alphaTime?: number;
@@ -71,10 +74,10 @@ const TOPIC_SUMMARY_CLOUD_BATCH = 5;
 const IMPOSSIBLE_SIMILARITY_SCORE_THRESHOLD = 0.35;
 const PRONOUN_REFERENCE_WINDOW_MESSAGES = 8;
 const USERNAME_ALIAS_TTL_MS = 12 * 60 * 60 * 1000;
-const TARGET_SPEAKER_SEMANTIC_THRESHOLD = 0.66;
-const SELF_SPEAKER_SEMANTIC_THRESHOLD = 0.68;
-const GROUP_SEMANTIC_THRESHOLD = 0.74;
-const GROUP_RECALL_MIN_TEXT_LENGTH = 20;
+const TARGET_SPEAKER_SEMANTIC_THRESHOLD = parseFloatEnv(process.env.STATE_DAEMON_TARGET_SEMANTIC_THRESHOLD, 0.58);
+const SELF_SPEAKER_SEMANTIC_THRESHOLD = parseFloatEnv(process.env.STATE_DAEMON_SELF_SEMANTIC_THRESHOLD, 0.60);
+const GROUP_SEMANTIC_THRESHOLD = parseFloatEnv(process.env.STATE_DAEMON_GROUP_SEMANTIC_THRESHOLD, 0.68);
+const GROUP_RECALL_MIN_TEXT_LENGTH = 12;
 const RECALL_RESULT_LIMIT = 6;
 const PARTICIPANT_RECENT_MESSAGE_LIMIT = 5;
 const PARTICIPANT_HISTORY_LIMIT = 5;
@@ -82,6 +85,12 @@ const IDENTITY_EVENT_HISTORY_LIMIT = 64;
 const CONTEXT_PARTICIPANT_LIMIT = 12;
 const CONTEXT_IDENTITY_EVENT_LIMIT = 12;
 const TARGET_ACTOR_MESSAGE_LIMIT = 6;
+const PROFILE_CACHE_TTL_MS = 30 * 60 * 1000;
+const PROFILE_FILES = ["preferences", "tech_projects", "relations"] as const;
+const TOPIC_DRIFT_THRESHOLD = parseFloatEnv(process.env.STATE_DAEMON_TOPIC_DRIFT_THRESHOLD, 0.40);
+const TOPIC_DRIFT_RECALL_COOLDOWN_MS = 5 * 60 * 1000;
+const TOPIC_DRIFT_MIN_TEXT_LENGTH = 8;
+const TOPIC_DRIFT_MAX_RESULTS = 3;
 
 export function createInMemoryContextStore(
   options: CreateInMemoryContextStoreOptions = {}
@@ -101,6 +110,7 @@ export function createInMemoryContextStore(
   const cloudModel = options.cloudModel;
   const archiverService = createArchiverService({ cloudModel });
   const contextSearcher = options.contextSearcher ?? createContextSearcher();
+  const vfsClient: MemoryVfsClient | null = options.vfsClient ?? null;
   const recallDebugEnabled = parseBooleanEnv(process.env.STATE_DAEMON_RECALL_DEBUG);
   let lastCcbEvictionTime = 0;
 
@@ -324,9 +334,30 @@ export function createInMemoryContextStore(
           alphaCenter
         );
       }
+      if (
+        targetSession.messageIds.size > 1 &&
+        materializedMessage.context.trim().length >= TOPIC_DRIFT_MIN_TEXT_LENGTH &&
+        targetSession.centerVector.length > 0 &&
+        vector.length > 0 &&
+        now - targetSession.lastTopicDriftRecallTime >= TOPIC_DRIFT_RECALL_COOLDOWN_MS
+      ) {
+        const driftScore = cosine(vector, targetSession.centerVector);
+        if (driftScore < TOPIC_DRIFT_THRESHOLD) {
+          targetSession.lastTopicDriftRecallTime = now;
+          triggerSupplementaryRecall(
+            targetSession,
+            ccb,
+            chatId,
+            materializedMessage.context,
+            contextSearcher,
+            now,
+          ).catch((error) => console.error("supplementary recall failed", error));
+        }
+      }
       serializePerChat(chatLocks, chatId, () =>
         updateTopicSummary(ccb, targetSession, cloudModel)
       ).catch(error => console.error("updateTopicSummary error", error));
+      prefetchUserProfile(ccb, materializedMessage.userId, now, vfsClient);
     },
     getContextByAnchor: ({ chatId, messageId }) => {
       const ccb = chatControlBlocks.get(chatId);
@@ -476,6 +507,7 @@ function getOrCreateChatControlBlock(
     nextSessionSeq: 1,
     lastExpirationCheckTime: 0,
     lastActivityTime: Date.now(),
+    profileCacheByActor: new Map(),
   };
   chatControlBlocks.set(chatId, next);
   return next;
@@ -486,11 +518,20 @@ function parseBooleanEnv(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
+function parseFloatEnv(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseFloat(value.trim());
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function createEmptyContextAnchorSnapshot(): ContextAnchorSnapshot {
   return {
     recentMessages: [],
     sessionMessages: [],
     targetMessages: [],
+    supplementaryContext: [],
     participants: [],
     identityEvents: [],
     resolvedTargets: [],
@@ -770,13 +811,18 @@ function buildContextAnchorSnapshot(
       return event.actorIds.some((actorId) => participantIds.has(actorId));
     })
     .slice(-CONTEXT_IDENTITY_EVENT_LIMIT);
+  const userProfiles = collectCachedUserProfiles(ccb, participantIds);
+  const session = ccb.sessionControlBlocks.get(node.sessionId);
+  const supplementaryContext = session?.supplementaryRecallMessages ?? [];
   return {
     recentMessages: focusedRecentMessages,
     sessionMessages: focusedSessionMessages,
     targetMessages,
+    supplementaryContext,
     participants,
     identityEvents,
     resolvedTargets,
+    userProfiles,
   };
 }
 
@@ -1269,7 +1315,7 @@ function shouldAllowGroupWideSemanticRecall(
   if (hasDisplayNameReference) {
     return false;
   }
-  if (recallReason !== "self") {
+  if (recallReason !== "self" && recallReason !== "display_name_unresolved") {
     return false;
   }
   return message.context.trim().length >= GROUP_RECALL_MIN_TEXT_LENGTH;
@@ -1280,6 +1326,48 @@ function filterSearchResultsByScore(results: SearchResult[], minScore: number): 
     .filter((item) => item.score >= minScore)
     .sort((a, b) => b.score - a.score)
     .slice(0, RECALL_RESULT_LIMIT);
+}
+
+async function triggerSupplementaryRecall(
+  session: SessionControlBlock,
+  ccb: ChatControlBlock,
+  chatId: number,
+  query: string,
+  contextSearcher: ContextSearcher,
+  now: number,
+): Promise<void> {
+  const results = filterSearchResultsByScore(
+    await contextSearcher.searchSemantic({
+      chatId,
+      query,
+      limit: TOPIC_DRIFT_MAX_RESULTS,
+    }),
+    GROUP_SEMANTIC_THRESHOLD,
+  );
+  if (results.length === 0) {
+    return;
+  }
+  const existingMessageIds = session.messageIds;
+  const supplementary: TelegramMessage[] = [];
+  for (const result of results) {
+    for (const stored of result.messages) {
+      const msgId = Number(stored.messageId);
+      if (existingMessageIds.has(msgId)) {
+        continue;
+      }
+      const converted = toTelegramMessage(stored);
+      if (converted) {
+        supplementary.push(materializeMessageActors(ccb, converted, now));
+      }
+      if (supplementary.length >= TOPIC_DRIFT_MAX_RESULTS) {
+        break;
+      }
+    }
+    if (supplementary.length >= TOPIC_DRIFT_MAX_RESULTS) {
+      break;
+    }
+  }
+  session.supplementaryRecallMessages = supplementary;
 }
 
 function buildEmbeddingTextWithGhostContext(
@@ -1379,6 +1467,12 @@ async function archiveSession(
     topicSummary: session.topicSummary,
     messages: sortedMessages,
   });
+  for (const item of sortedMessages) {
+    const actorId = item.message.userId;
+    if (isKnownActorId(actorId)) {
+      ccb.profileCacheByActor.delete(actorId);
+    }
+  }
 }
 
 function downgradeSessionStatus(session: SessionControlBlock): void {
@@ -1581,6 +1675,8 @@ function createSession(
     lastActiveTime: now,
     messageIds: new Set<number>(),
     rootMessageIds: new Set<number>(),
+    supplementaryRecallMessages: [],
+    lastTopicDriftRecallTime: 0,
   };
   ccb.sessionControlBlocks.set(sessionId, session);
   return session;
@@ -1603,6 +1699,8 @@ function createSessionFromSearchResult(searchResult: SearchResult, now: number):
     recentVector: inferredCenter.length > 0 ? inferredCenter.slice() : null,
     messageIds: new Set<number>(),
     rootMessageIds: new Set(),
+    supplementaryRecallMessages: [],
+    lastTopicDriftRecallTime: 0,
     status: "L1_ACTIVE",
     lastActiveTime: now,
   };
@@ -1873,5 +1971,63 @@ function evictIdleChatControlBlocks(
     }
     chatControlBlocks.delete(chatId);
   }
+}
+
+function prefetchUserProfile(
+  ccb: ChatControlBlock,
+  actorId: string,
+  now: number,
+  vfsClient: MemoryVfsClient | null,
+): void {
+  if (!vfsClient || !isKnownActorId(actorId)) return;
+  const cached = ccb.profileCacheByActor.get(actorId);
+  if (cached && cached.expiresAt > now) return;
+  loadUserProfileFromVfs(actorId, vfsClient).then((profile) => {
+    if (profile) {
+      ccb.profileCacheByActor.set(actorId, { profile, expiresAt: Date.now() + PROFILE_CACHE_TTL_MS });
+    }
+  }).catch(() => {});
+}
+
+async function loadUserProfileFromVfs(
+  actorId: string,
+  vfsClient: MemoryVfsClient,
+): Promise<UserProfileSummary | null> {
+  const profile: UserProfileSummary = { actorId };
+  let hasData = false;
+  for (const file of PROFILE_FILES) {
+    try {
+      const resp = await vfsClient.read({ path: `mem://users/${actorId}/${file}.json` });
+      if (resp.success && resp.content) {
+        const parsed = JSON.parse(resp.content);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && Object.keys(parsed).length > 0) {
+          if (file === "preferences") { profile.preferences = parsed; hasData = true; }
+          else if (file === "tech_projects") { profile.techProjects = parsed; hasData = true; }
+          else if (file === "relations") { profile.relations = Array.isArray(parsed) ? parsed : [parsed]; hasData = true; }
+        }
+      }
+    } catch {}
+  }
+  return hasData ? profile : null;
+}
+
+function collectCachedUserProfiles(
+  ccb: ChatControlBlock,
+  participantIds: Set<string>,
+): UserProfileSummary[] {
+  const now = Date.now();
+  const profiles: UserProfileSummary[] = [];
+  for (const actorId of participantIds) {
+    const cached = ccb.profileCacheByActor.get(actorId);
+    if (!cached || cached.expiresAt <= now) continue;
+    const profile = cached.profile;
+    if (!profile.preferences && !profile.techProjects && !profile.relations) continue;
+    const participant = ccb.participantsById.get(actorId);
+    if (participant) {
+      profile.displayName = participant.actor.displayName ?? undefined;
+    }
+    profiles.push(profile);
+  }
+  return profiles;
 }
 

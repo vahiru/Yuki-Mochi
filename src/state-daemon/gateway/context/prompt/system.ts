@@ -8,6 +8,7 @@ const SHARED_MEMORY_DIR = resolve(CURRENT_DIR, "../../../../../.runtime/memory_f
 const DEFAULT_SEND_MESSAGE_MODE: SendMessageMode = "strict";
 export const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 const GROUP_PROMPT_STORE_FILE = "group-prompts.json";
+const USER_MEMORY_DIR = "user-memories";
 const FILE_CACHE_TTL_MS = 30_000;
 
 const DEFAULT_SYSTEM_FILE_NAMES = ["Soul.md", "Identity.md", "Tools.md"] as const;
@@ -118,4 +119,31 @@ export function formatTimeNow(timeZone: string = DEFAULT_TIME_ZONE): string {
   } catch {
     return new Date().toISOString();
   }
+}
+
+export interface UserMemoryEntry {
+  actorId: string;
+  memory: string;
+}
+
+export function loadUserMemoriesByActorIds(actorIds: string[]): UserMemoryEntry[] {
+  if (actorIds.length === 0) return [];
+  const memoryDir = resolve(resolveMemoryDir(), USER_MEMORY_DIR);
+  const entries: UserMemoryEntry[] = [];
+  for (const actorId of actorIds) {
+    const normalized = actorId.trim();
+    if (!normalized) continue;
+    const sanitized = normalized.replace(/[^a-zA-Z0-9_:.-]/g, "_");
+    const filePath = resolve(memoryDir, `${sanitized}.json`);
+    const raw = readCachedFile(filePath);
+    if (!raw) continue;
+    try {
+      const parsed = JSON.parse(raw) as { memory?: unknown };
+      const memory = typeof parsed.memory === "string" ? parsed.memory.trim() : "";
+      if (memory) {
+        entries.push({ actorId: normalized, memory });
+      }
+    } catch {}
+  }
+  return entries;
 }

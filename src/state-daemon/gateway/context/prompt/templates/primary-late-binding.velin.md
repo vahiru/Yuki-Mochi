@@ -14,6 +14,7 @@ defineProps({
   mentionsOtherUsers: { type: Boolean, default: false },
   extraGuideline: { type: String, default: '' },
   triggerReason: { type: String, default: '' },
+  userMemories: { type: Array, default: () => [] },
 })
 </script>
 
@@ -53,6 +54,17 @@ Chat-Scoped Memory For Current Chat:
 
 Apply this memory after trigger/decision rules and safety constraints.
 Use it to refine this chat's standing style/persona/output preferences.
+
+</div>
+
+<div v-if="userMemories && userMemories.length > 0 && !isProbing">
+
+Per-User Memory (explicit user facts):
+<div v-for="mem in userMemories">
+- [{{ mem.actorId }}]: {{ mem.memory }}
+</div>
+
+These are facts explicitly stored about individual users. Use them when answering questions about or interacting with these users.
 
 </div>
 
@@ -133,6 +145,10 @@ When acting:
   - Allow `action="set"`, `action="add"`, or `action="clear"` only when user explicitly asks to remember/set/append/forget long-term chat preference/persona/rules.
   - Do not write on casual chat, guesswork, or implicit inference.
   - Prefer `action="get"` when checking current chat-scoped memory.
+- `user_memory` tool: store personal facts about individual users (preferences, skills, habits, context).
+  - Use `user_memory` with `user_id` = the user's `sender_id` when a user explicitly asks to remember personal facts about themselves.
+  - `user_memory` is for per-user facts. `group_prompt_memory` is for chat-wide rules and preferences.
+  - Do not write to `user_memory` on casual chat or guesswork.
 - Use `await_response=true` when you need to continue after sending a text message or media batch.
 - For media batch, use one group-level `caption`.
 - If a drafted message looks paragraph-like, first compress it; split only when a single message would lose clarity.

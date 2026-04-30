@@ -10,6 +10,7 @@ import {
   createInMemoryContextStore,
   formatTimeNow,
   loadGroupPromptByChatId,
+  loadUserMemoriesByActorIds,
   renderLateBindingPrompt,
   renderSystemPrompt,
   type ContextAssembler,
@@ -17,6 +18,7 @@ import {
 } from "./context";
 import { createOllamaLocalModel, createOpenAICloudModel } from "../model/llm";
 import { createDenseEmbedder } from "../model/embedding";
+import { getSharedMemoryVfsClient } from "../storage/vfs";
 
 export type RuntimeReplyStage =
   | "retrieving_context"
@@ -271,6 +273,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
         baseURL: options.modelConfig?.llm?.cloud?.baseURL,
         model: options.modelConfig?.llm?.cloud?.model,
       }),
+      vfsClient: getSharedMemoryVfsClient(),
     });
   const contextAssembler = options.contextAssembler ?? createContextAssembler();
   const probeProvider = (
@@ -319,9 +322,11 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
       contextMessages: contextSnapshot.sessionMessages,
       recentMessages: contextSnapshot.recentMessages,
       targetMessages: contextSnapshot.targetMessages,
+      supplementaryContext: contextSnapshot.supplementaryContext,
       participants: contextSnapshot.participants,
       identityEvents: contextSnapshot.identityEvents,
       resolvedTargets: contextSnapshot.resolvedTargets,
+      userProfiles: contextSnapshot.userProfiles,
       triggerMessage,
       systemPrompt,
     });
@@ -406,6 +411,11 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
         );
         const normalizedPrompt = prompt.trim();
         const targetingSignals = deriveTargetingSignals(triggerMessage);
+        const userMemoryActorIds = [triggerMessage.userId];
+        if (triggerMessage.metadata.replyToUserId) {
+          userMemoryActorIds.push(triggerMessage.metadata.replyToUserId);
+        }
+        const userMemories = loadUserMemoriesByActorIds(userMemoryActorIds);
         const lateBindingPrompt = await renderLateBindingPrompt({
           chatId: String(triggerMessage.chatId),
           timeNow: formatTimeNow(),
@@ -419,6 +429,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
           mentionsOtherUsers: targetingSignals.mentionsOtherUsers,
           extraGuideline: normalizedPrompt || undefined,
           triggerReason,
+          userMemories,
         });
         llmMessages.push({ role: "user", content: lateBindingPrompt });
 

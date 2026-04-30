@@ -71,10 +71,14 @@ export function createArchiverService(options: CreateArchiverServiceOptions = {}
         return;
       }
 
+      const actorIds = collectUniqueActorIds(session);
+      const existingProfiles = await loadExistingProfiles(vfsClient, actorIds);
+
       const llmMessages = assembler.build({
         sessionMessages: session.messages.map((item) => item.message),
         sessionId: session.sessionId,
         systemPrompt: ARCHIVER_SYSTEM_PROMPT,
+        existingProfiles,
       });
       const { text } = await cloudModel.complete({ messages: llmMessages });
       const patches = parseArchivePatches(text);
@@ -179,4 +183,43 @@ function isArchivePatch(value: unknown): value is ArchivePatch {
     typeof candidate.content === "object" &&
     !Array.isArray(candidate.content)
   );
+}
+
+function collectUniqueActorIds(session: BackgroundArchiveSession): string[] {
+  const ids = new Set<string>();
+  for (const item of session.messages) {
+    if (item.message.userId) {
+      ids.add(item.message.userId);
+    }
+  }
+  return Array.from(ids);
+}
+
+const PROFILE_FILES: ArchivePatchFile[] = ["preferences", "tech_projects", "relations"];
+
+async function loadExistingProfiles(
+  vfsClient: InstanceType<typeof import("../../../storage/vfs").MemoryVfsClient>,
+  actorIds: string[],
+): Promise<Map<string, Record<string, unknown>>> {
+  const profiles = new Map<string, Record<string, unknown>>();
+  for (const actorId of actorIds) {
+    const merged: Record<string, unknown> = {};
+    for (const file of PROFILE_FILES) {
+      try {
+        const resp = await vfsClient.read({ path: `mem://users/${actorId}/${file}.json` });
+        if (resp.content) {
+          const parsed = JSON.parse(resp.content);
+          if (parsed && typeof parsed === "object") {
+            merged[file] = parsed;
+          }
+        }
+      } catch {
+        // profile file may not exist yet
+      }
+    }
+    if (Object.keys(merged).length > 0) {
+      profiles.set(actorId, merged);
+    }
+  }
+  return profiles;
 }

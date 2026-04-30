@@ -26,4 +26,5 @@ export interface RenderLateBindingPromptInput {
   mentionsOtherUsers?: boolean;
   extraGuideline?: string;
   triggerReason?: string;
+  userMemories?: Array<{ actorId: string; memory: string }>;
 }

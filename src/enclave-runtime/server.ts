@@ -10,6 +10,7 @@ import { createOpenAIEnclaveRuntime } from "./agent/core/openai";
 import {
   createFetchWebpageTool,
   createGroupPromptMemoryTool,
+  createUserMemoryTool,
   createListFilesSafeTool,
   createReadFileSafeTool,
   createRunSafeBashTool,
@@ -59,6 +60,7 @@ const toolFactories: Record<string, () => any> = {
   send_message: createSendMessageTool,
   send_file: createSendFileTool,
   group_prompt_memory: createGroupPromptMemoryTool,
+  user_memory: createUserMemoryTool,
 };
 
 function parseEnabledToolNames(): Set<string> {

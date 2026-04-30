@@ -13,7 +13,7 @@ import {
   getSenderId,
   getSpeaker,
 } from "../../utils/messageXml";
-import type { ContextAssembler, ParticipantState, ResolvedTarget } from "./core/types";
+import type { ContextAssembler, ParticipantState, ResolvedTarget, UserProfileSummary } from "./core/types";
 import type { TelegramMessage } from "../../types/message";
 import { isKnownActorId } from "../../utils/actor";
 
@@ -31,7 +31,7 @@ type UnresolvedTargetQuery = {
 
 export function createContextAssembler(): ContextAssembler {
   return {
-    build: ({ contextMessages, recentMessages, targetMessages, triggerMessage, participants, identityEvents, resolvedTargets, systemPrompt }) => {
+    build: ({ contextMessages, recentMessages, targetMessages, supplementaryContext, triggerMessage, participants, identityEvents, resolvedTargets, systemPrompt, userProfiles }) => {
       const triggerId = triggerMessage.messageId;
       const normalizedRecent = recentMessages
         .filter((item) => item.messageId !== triggerId)
@@ -45,6 +45,10 @@ export function createContextAssembler(): ContextAssembler {
         .filter((item) => item.messageId !== triggerId)
         .slice()
         .sort((a, b) => a.timestamp - b.timestamp);
+      const normalizedSupplementary = (supplementaryContext ?? [])
+        .filter((item) => item.messageId !== triggerId)
+        .slice()
+        .sort((a, b) => a.timestamp - b.timestamp);
       const messageIndex = new Map<number, TelegramMessage>();
       for (const message of normalizedRecent) {
         messageIndex.set(message.messageId, message);
@@ -53,6 +57,9 @@ export function createContextAssembler(): ContextAssembler {
         messageIndex.set(message.messageId, message);
       }
       for (const message of normalizedContext) {
+        messageIndex.set(message.messageId, message);
+      }
+      for (const message of normalizedSupplementary) {
         messageIndex.set(message.messageId, message);
       }
 
@@ -87,6 +94,11 @@ export function createContextAssembler(): ContextAssembler {
       const resolvedTargetsXml = resolvedTargets.length > 0
         ? resolvedTargets.map((target) => `    ${formatResolvedTargetNode(target)}`).join("\n")
         : "";
+      const userProfilesXml = formatUserProfilesXml(userProfiles);
+      const supplementaryXml = normalizedSupplementary.length > 0
+        ? `\n  <supplementary_context>\n${normalizedSupplementary.map((message) => formatNormalMessageNode(message,
+  findReplyTarget(message.metadata.replyToMessageId))).join("\n")}\n  </supplementary_context>`
+        : "";
       const compactTarget = pickCompactResolvedTarget(resolvedTargets, normalizedTargetMessages);
       const unresolvedTarget = compactTarget
         ? null
@@ -120,7 +132,7 @@ ${participantsXml}
   <identity_events>
 ${identityEventsXml}
   </identity_events>
-  <target_actor_messages>
+${userProfilesXml}  <target_actor_messages>
 ${normalizedTargetMessages.map((message) => formatNormalMessageNode(message,
   findReplyTarget(message.metadata.replyToMessageId))).join("\n")}
   </target_actor_messages>
@@ -131,7 +143,7 @@ ${normalizedRecent.map((message) => formatNormalMessageNode(message,
   <related_history>
 ${normalizedContext.map((message) => formatNormalMessageNode(message,
   findReplyTarget(message.metadata.replyToMessageId))).join("\n")}
-  </related_history>
+  </related_history>${supplementaryXml}
 </context>
 <current_message id="${triggerMessage.messageId}" sender_id="${escapeXml(getSenderId(triggerMessage))}" sender_entity_type="${escapeXml(getSenderEntityType(triggerMessage))}" speaker="${escapeXml(getSpeaker(triggerMessage))}"${currentDisplayNameAttribute}${currentSenderHandleAttribute} timestamp="${formatTimestampUtc8(triggerMessage.timestamp)}"${currentReplyToAttribute}>
   <resolved_targets>
@@ -454,4 +466,63 @@ function damerauLevenshtein(left: string, right: string): number {
   }
 
   return matrix[a.length]![b.length]!;
+}
+
+const PROFILE_SUMMARY_MAX_LENGTH = 200;
+
+function formatUserProfilesXml(profiles?: UserProfileSummary[]): string {
+  if (!profiles || profiles.length === 0) return "";
+  const nodes: string[] = [];
+  for (const profile of profiles) {
+    const summary = summarizeProfile(profile);
+    if (!summary) continue;
+    const displayNameAttr = profile.displayName
+      ? ` display_name="${escapeXml(profile.displayName)}"`
+      : "";
+    nodes.push(`    <profile actor_id="${escapeXml(profile.actorId)}"${displayNameAttr}>${escapeXml(summary)}</profile>`);
+  }
+  if (nodes.length === 0) return "";
+  return `  <user_profiles>\n${nodes.join("\n")}\n  </user_profiles>\n`;
+}
+
+function summarizeProfile(profile: UserProfileSummary): string {
+  const parts: string[] = [];
+  if (profile.preferences && typeof profile.preferences === "object") {
+    const entries = flattenProfileObject(profile.preferences);
+    if (entries) parts.push(entries);
+  }
+  if (profile.techProjects && typeof profile.techProjects === "object") {
+    const entries = flattenProfileObject(profile.techProjects);
+    if (entries) parts.push(entries);
+  }
+  if (profile.relations && Array.isArray(profile.relations) && profile.relations.length > 0) {
+    const relSummary = profile.relations
+      .slice(0, 3)
+      .map((r) => typeof r === "object" && r ? flattenProfileObject(r as Record<string, unknown>) : String(r))
+      .filter(Boolean)
+      .join("; ");
+    if (relSummary) parts.push(relSummary);
+  }
+  const combined = parts.join(" | ");
+  if (combined.length > PROFILE_SUMMARY_MAX_LENGTH) {
+    return combined.slice(0, PROFILE_SUMMARY_MAX_LENGTH - 3) + "...";
+  }
+  return combined;
+}
+
+function flattenProfileObject(obj: Record<string, unknown>): string {
+  const entries: string[] = [];
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === null || value === undefined || value === "") continue;
+    if (Array.isArray(value)) {
+      if (value.length === 0) continue;
+      entries.push(`${key}: ${value.join(", ")}`);
+    } else if (typeof value === "object") {
+      const nested = flattenProfileObject(value as Record<string, unknown>);
+      if (nested) entries.push(`${key}: ${nested}`);
+    } else {
+      entries.push(`${key}: ${String(value)}`);
+    }
+  }
+  return entries.join("; ");
 }
