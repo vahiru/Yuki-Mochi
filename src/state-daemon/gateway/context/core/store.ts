@@ -356,11 +356,17 @@ export function createInMemoryContextStore(
           ? allSessionMessages
           : allSessionMessages.slice(allSessionMessages.length - maxContextMessages);
       const sessionMessageIds = new Set<number>(sessionMessages.map((item) => item.messageId));
-      let recentMessages = Array.from(ccb.messageNodes.values())
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .filter((item) => !sessionMessageIds.has(item.messageId))
-        .slice(0, RECENT_CHAT_MESSAGES_COUNT)
-        .sort((a, b) => a.timestamp - b.timestamp)
+      const allNodes = Array.from(ccb.messageNodes.values())
+        .sort((a, b) => b.timestamp - a.timestamp);
+      const topRecent: MessageNode[] = [];
+      for (const item of allNodes) {
+        if (topRecent.length >= RECENT_CHAT_MESSAGES_COUNT) break;
+        if (!sessionMessageIds.has(item.messageId)) {
+          topRecent.push(item);
+        }
+      }
+      let recentMessages = topRecent
+        .reverse()
         .map((item) => item.message);
       if (anchorReplyTarget) {
         const replyMessage = anchorReplyTarget.message;

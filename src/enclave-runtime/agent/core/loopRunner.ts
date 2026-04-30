@@ -93,6 +93,9 @@ const DEFAULT_STRICT_TEXT_FALLBACK = true;
 const VISION_DEBUG_ENABLED = /^(1|true|yes)$/i.test(
   (process.env.VISION_DEBUG ?? "").trim()
 );
+const ENCLAVE_DEBUG_ENABLED = /^(1|true|yes)$/i.test(
+  (process.env.ENCLAVE_DEBUG ?? "").trim()
+);
 const PHOTO_PLACEHOLDER_PATTERN = /\[photo(?:\s*x\d+)?\]/g;
 type SendMessageMode = "strict" | "compat";
 
@@ -687,7 +690,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
     const sendMessageMode = resolveSendMessageMode();
     const strictTextFallbackEnabled = resolveStrictTextFallbackEnabled();
     try {
-      console.log("[loopRunner] calling agentLoop with messages:", messages.length);
+      if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] calling agentLoop with messages:", messages.length);
       const stream = agentLoop(
         messages as AgentMessage[],
         loopContext,
@@ -699,15 +702,15 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
         },
         abortController.signal
       );
-      console.log("[loopRunner] agentLoop returned stream");
+      if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] agentLoop returned stream");
 
       for await (const event of stream) {
-        console.log("[loopRunner] event:", event.type, event);
+        if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] event:", event.type);
         if (event.type === "message_update") {
           const assistantEvent = event.assistantMessageEvent;
           if (assistantEvent.type === "text_delta" && assistantEvent.delta) {
             currentMessageTextBuffer += assistantEvent.delta;
-            console.log("[loopRunner] text_delta:", assistantEvent.delta);
+            if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] text_delta:", assistantEvent.delta);
             continue;
           }
           if (assistantEvent.type === "text_end" && assistantEvent.content) {
@@ -727,10 +730,10 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
         }
 
         if (event.type === "message_end") {
-          console.log("[loopRunner] message_end, buffer:", currentMessageTextBuffer, "hasToolCall:", currentMessageHasToolCall);
+          if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] message_end, buffer:", currentMessageTextBuffer, "hasToolCall:", currentMessageHasToolCall);
           const message = event.message as AgentEndMessage;
           if (message.role !== "assistant") {
-            console.log("[loopRunner] message_end: role is not assistant:", message.role);
+            if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] message_end: role is not assistant:", message.role);
             currentMessageHasToolCall = false;
             currentMessageTextBuffer = "";
             continue;
@@ -738,7 +741,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
           // 处理错误情况
           if (message.stopReason === "error") {
             const errorMsg = message.errorMessage || "Unknown error";
-            console.log("[loopRunner] message_end error:", errorMsg);
+            if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] message_end error:", errorMsg);
             globalMessageHasEmitted = true;
             yield {
               type: "message_update",
@@ -757,7 +760,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
                 .map((block) => block.text as string)
                 .join("");
             }
-            console.log("[loopRunner] message_end output:", output);
+            if (ENCLAVE_DEBUG_ENABLED) console.log("[loopRunner] message_end output:", output);
             if (output) {
               globalMessageHasEmitted = true;
               yield {
@@ -843,7 +846,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
           if (toolsChanged) {
             syncToolsInPlace(loopContext, options.getCurrentTools());
           }
-          console.log("tool_execution_end", event.result);
+          if (ENCLAVE_DEBUG_ENABLED) console.log("tool_execution_end", event.toolName);
           yield {
             type: "tool_execution_end",
             toolName: event.toolName,
@@ -854,7 +857,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
         }
 
         if (event.type === "tool_execution_start") {
-          console.log("tool_execution_start", event);
+          if (ENCLAVE_DEBUG_ENABLED) console.log("tool_execution_start", event.toolName);
           yield {
             type: "tool_execution_start",
             toolName: event.toolName,
@@ -867,7 +870,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
       if (!globalMessageHasEmitted && !messageSentViaTool) {
         const newMessages = await stream.result();
         const fallbackText = extractAssistantTextFromMessages(newMessages);
-        console.log(
+        if (ENCLAVE_DEBUG_ENABLED) console.log(
           `[loopRunner] fallback extraction: found=${Boolean(fallbackText)} length=${fallbackText.length}`
         );
         const canEmitFallbackText =

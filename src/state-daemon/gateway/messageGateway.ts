@@ -704,20 +704,18 @@ export function createMessageGateway(
     }
   };
 
-  const triggeredMessageIds = new Map<number, number>();
-  const TRIGGERED_IDS_MAX = 50_000;
-  const TRIGGERED_IDS_PRUNE_AGE_MS = 60 * 60 * 1000;
+  let triggeredCurrentGen = new Map<number, number>();
+  let triggeredPreviousGen = new Map<number, number>();
+  const TRIGGERED_GEN_MAX = 25_000;
 
-  const pruneTriggeredIds = () => {
-    if (triggeredMessageIds.size <= TRIGGERED_IDS_MAX) return;
-    const cutoff = Date.now() - TRIGGERED_IDS_PRUNE_AGE_MS;
-    for (const [id, ts] of triggeredMessageIds) {
-      if (ts < cutoff) triggeredMessageIds.delete(id);
-    }
-    if (triggeredMessageIds.size > TRIGGERED_IDS_MAX) {
-      const sorted = [...triggeredMessageIds.entries()].sort((a, b) => a[1] - b[1]);
-      const toRemove = sorted.slice(0, triggeredMessageIds.size - TRIGGERED_IDS_MAX);
-      for (const [id] of toRemove) triggeredMessageIds.delete(id);
+  const hasTriggeredId = (messageId: number): boolean =>
+    triggeredCurrentGen.has(messageId) || triggeredPreviousGen.has(messageId);
+
+  const recordTriggeredId = (messageId: number) => {
+    triggeredCurrentGen.set(messageId, Date.now());
+    if (triggeredCurrentGen.size >= TRIGGERED_GEN_MAX) {
+      triggeredPreviousGen = triggeredCurrentGen;
+      triggeredCurrentGen = new Map();
     }
   };
 
@@ -749,7 +747,7 @@ export function createMessageGateway(
     normalizer.ingestMessage(rawMessage);
 
     // 核心修复：物理去重
-    if (triggeredMessageIds.has(rawMessage.messageId)) {
+    if (hasTriggeredId(rawMessage.messageId)) {
       return;
     }
 
@@ -759,11 +757,10 @@ export function createMessageGateway(
         return;
       }
       // 再次检查去重，防止并发竞态
-      if (triggeredMessageIds.has(rawMessage.messageId)) {
+      if (hasTriggeredId(rawMessage.messageId)) {
         return;
       }
-      triggeredMessageIds.set(rawMessage.messageId, Date.now());
-      pruneTriggeredIds();
+      recordTriggeredId(rawMessage.messageId);
       await flushRecordAndTrigger(rawMessage, decision);
     })().catch((error) => {
       console.error("message gateway handler failed:", error);
@@ -776,7 +773,7 @@ export function createMessageGateway(
     if (!enableEditedTrigger) {
       return;
     }
-    if (triggeredMessageIds.has(editedMessage.messageId)) {
+    if (hasTriggeredId(editedMessage.messageId)) {
       return;
     }
 
@@ -785,11 +782,10 @@ export function createMessageGateway(
       if (!decision.shouldTrigger || !decision.prompt) {
         return;
       }
-      if (triggeredMessageIds.has(editedMessage.messageId)) {
+      if (hasTriggeredId(editedMessage.messageId)) {
         return;
       }
-      triggeredMessageIds.set(editedMessage.messageId, Date.now());
-      pruneTriggeredIds();
+      recordTriggeredId(editedMessage.messageId);
       await flushRecordAndTrigger(editedMessage, decision);
     })().catch((error) => {
       console.error("message gateway edited handler failed:", error);

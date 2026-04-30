@@ -111,7 +111,7 @@ services:
       API_KEY: "${API_KEY:-}"
     command: >
       bash -lc "
-      cargo run --manifest-path src/sandbox/Cargo.toml
+      cargo run --release --manifest-path src/sandbox/Cargo.toml
       "
     profiles:
       - sandbox

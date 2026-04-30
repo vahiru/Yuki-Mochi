@@ -103,6 +103,10 @@ const DEFAULT_SEND_MESSAGE_MODE = "strict";
 const VISION_DEBUG_ENABLED = /^(1|true|yes)$/i.test(
   (process.env.VISION_DEBUG ?? "").trim()
 );
+const SESSION_DEBUG_ENABLED = /^(1|true|yes)$/i.test(
+  (process.env.SESSION_DEBUG ?? "").trim()
+);
+let sessionDebugDirCreated = false;
 type SendMessageMode = "strict" | "compat";
 
 function statusTextForToolStart(toolName: string): string {
@@ -325,18 +329,23 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
 
   const recordMessage: ClientRuntime["recordMessage"] = async (message) => {
     await contextStore.ingestMessage({ message });
-    const lines: string[] = [];
-    contextStore.debugPrintSessionControlBlocks({
-      chatId: message.chatId,
-      log: (...args: unknown[]) => {
-        lines.push(args.map((arg) => inspect(arg, { depth: null, compact: true })).join(" "));
-      },
-    });
-    if (lines.length > 0) {
-      await mkdir(join(process.cwd(), ".memoh-debug"), { recursive: true });
-      const stamp = new Date().toISOString();
-      const header = `\n[${stamp}] chatId=${message.chatId} messageId=${message.messageId}\n`;
-      await appendFile(SESSION_DEBUG_LOG_PATH, `${header}${lines.join("\n")}\n`, "utf8");
+    if (SESSION_DEBUG_ENABLED) {
+      const lines: string[] = [];
+      contextStore.debugPrintSessionControlBlocks({
+        chatId: message.chatId,
+        log: (...args: unknown[]) => {
+          lines.push(args.map((arg) => inspect(arg, { depth: null, compact: true })).join(" "));
+        },
+      });
+      if (lines.length > 0) {
+        if (!sessionDebugDirCreated) {
+          await mkdir(join(process.cwd(), ".memoh-debug"), { recursive: true });
+          sessionDebugDirCreated = true;
+        }
+        const stamp = new Date().toISOString();
+        const header = `\n[${stamp}] chatId=${message.chatId} messageId=${message.messageId}\n`;
+        await appendFile(SESSION_DEBUG_LOG_PATH, `${header}${lines.join("\n")}\n`, "utf8");
+      }
     }
   };
 

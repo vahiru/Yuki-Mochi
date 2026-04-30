@@ -13,6 +13,8 @@ import { createCustomEmojiToTextResolver } from "./custom-emoji-to-text";
 import { createImageAltTextStore } from "./image-to-text-store";
 import type { CustomEmojiToTextConfig } from "./index";
 import { hydrateMessageActors } from "../utils/actor";
+import fsPromises from "node:fs/promises";
+import nodePath from "node:path";
 
 const DEFAULT_FINAL_TEXT = "(empty)";
 const DEFAULT_STREAM_PLACEHOLDER = "Working on it... estimated 30-90 seconds.";
@@ -373,7 +375,7 @@ export function createTelegramAdapter(
   };
 
   const renderStreamPreview = (state: StreamState): string => {
-    const content = state.chunks.join("");
+    const content = state.buffer;
     if (content) {
       if (state.statusText) {
         return `${state.statusText}\n\n${content}\n\n...`;
@@ -559,7 +561,8 @@ export function createTelegramAdapter(
       statusText: initialStatus,
       lastRenderedText: placeholderMessageId ? initialStatus : "",
       lastFlushAtMs: Date.now(),
-      chunks: [],
+      buffer: "",
+      chunkCount: 0,
     });
     return streamId;
   };
@@ -585,9 +588,9 @@ export function createTelegramAdapter(
     if (!state) {
       throw new Error(`stream not started for streamId: ${streamId}`);
     }
-    state.chunks.push(chunk);
-    // Refresh typing status every 5 chunks.
-    if (state.chunks.length % 5 === 0) {
+    state.buffer += chunk;
+    state.chunkCount += 1;
+    if (state.chunkCount % 5 === 0) {
       void setTyping(state.chatId);
     }
     void flushStreamPreview(streamId);
@@ -605,7 +608,7 @@ export function createTelegramAdapter(
       throw new Error(`stream not started for streamId: ${streamId}`);
     }
 
-    const finalText = state.chunks.join("") || DEFAULT_FINAL_TEXT;
+    const finalText = state.buffer || DEFAULT_FINAL_TEXT;
 
     try {
       if (state.placeholderMessageId) {
@@ -1324,6 +1327,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const RETRYABLE_NETWORK_CODES = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EHOSTUNREACH"]);
+
 function isRetryableNetworkError(error: unknown): boolean {
   if (!error || typeof error !== "object") {
     return false;
@@ -1331,8 +1336,7 @@ function isRetryableNetworkError(error: unknown): boolean {
   const maybeError = error as { code?: unknown; message?: unknown };
   const code = typeof maybeError.code === "string" ? maybeError.code : "";
   const message = typeof maybeError.message === "string" ? maybeError.message : "";
-  const retryableCodes = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED", "EHOSTUNREACH"]);
-  if (retryableCodes.has(code)) {
+  if (RETRYABLE_NETWORK_CODES.has(code)) {
     return true;
   }
   const lowerMessage = message.toLowerCase();
@@ -1392,19 +1396,17 @@ async function downloadBotFileToLocal(
   filePath: string,
   fileId: string
 ): Promise<string> {
-  const fs = await import("node:fs/promises");
-  const path = await import("node:path");
   const dir = "/tmp/kairos-vision";
-  await fs.mkdir(dir, { recursive: true });
-  const ext = path.extname(filePath) || ".jpg";
-  const localPath = path.join(dir, `${fileId.replace(/[^a-zA-Z0-9_-]/g, "_")}${ext}`);
+  await fsPromises.mkdir(dir, { recursive: true });
+  const ext = nodePath.extname(filePath) || ".jpg";
+  const localPath = nodePath.join(dir, `${fileId.replace(/[^a-zA-Z0-9_-]/g, "_")}${ext}`);
   const url = `https://api.telegram.org/file/bot${token}/${filePath}`;
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`download failed (${response.status})`);
   }
   const bytes = await response.arrayBuffer();
-  await fs.writeFile(localPath, Buffer.from(bytes));
+  await fsPromises.writeFile(localPath, Buffer.from(bytes));
   return localPath;
 }
 

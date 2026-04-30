@@ -697,7 +697,7 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
   };
 
   const renderStreamPreview = (state: StreamState): string => {
-    const content = state.chunks.join("");
+    const content = state.buffer;
     if (content) {
       if (state.statusText) {
         return `${state.statusText}\n\n${content}\n\n...`;
@@ -905,7 +905,8 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
         statusText: initialStatus,
         lastRenderedText: placeholderMessageId ? initialStatus : "",
         lastFlushAtMs: Date.now(),
-        chunks: [],
+        buffer: "",
+        chunkCount: 0,
       });
       return streamId;
     },
@@ -922,15 +923,16 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
     appendStream: (id, c) => {
       const s = streams.get(id);
       if (s) {
-        s.chunks.push(c);
-        if (s.chunks.length % 5 === 0) void setTyping(s.chatId);
+        s.buffer += c;
+        s.chunkCount += 1;
+        if (s.chunkCount % 5 === 0) void setTyping(s.chatId);
         void flushStreamPreview(s);
       }
     },
     endStream: async (id) => {
       const s = streams.get(id);
       if (!s) return "";
-      const text = s.chunks.join("") || DEFAULT_FINAL_TEXT;
+      const text = s.buffer || DEFAULT_FINAL_TEXT;
       if (s.placeholderMessageId) {
         await deleteStreamMessage(s);
       }
