@@ -1,5 +1,5 @@
 import {
-  createMemoryVfsClient,
+  getSharedMemoryVfsClient,
   SearchMode,
   type MemoryVfsClient,
   type SearchResult,
@@ -24,7 +24,7 @@ export interface CreateContextSearcherOptions {
 }
 
 export function createContextSearcher(options: CreateContextSearcherOptions = {}): ContextSearcher {
-  const vfsClient = options.vfsClient ?? createMemoryVfsClient();
+  const vfsClient = options.vfsClient ?? getSharedMemoryVfsClient();
   const defaultSemanticLimit =
     options.defaultSemanticLimit && options.defaultSemanticLimit > 0
       ? Math.floor(options.defaultSemanticLimit)
@@ -65,16 +65,17 @@ export function createContextSearcher(options: CreateContextSearcherOptions = {}
         if (!searchByActor) {
           return [];
         }
-        const scopedResults: SearchResult[] = [];
-        for (const targetActorId of actorIds) {
-          const actorResponse = await searchByActor({
-            chatId: String(chatId),
-            actorId: targetActorId,
-            query: normalizedQuery,
-            limit: normalizedLimit,
-          });
-          scopedResults.push(...actorResponse.results);
-        }
+        const allResponses = await Promise.all(
+          actorIds.map((targetActorId) =>
+            searchByActor({
+              chatId: String(chatId),
+              actorId: targetActorId,
+              query: normalizedQuery,
+              limit: normalizedLimit,
+            })
+          )
+        );
+        const scopedResults = allResponses.flatMap((r) => r.results);
         return mergeSearchResults(scopedResults, normalizedLimit);
       }
 

@@ -63,6 +63,9 @@ const SHORT_MESSAGE_LENGTH = 4;
 const RECENT_SESSIONS_COUNT = 5;
 const RECENT_CHAT_MESSAGES_COUNT = 10;
 const SESSION_LRU_EXPIRE_MS = 10 * 60 * 1000;
+const EXPIRATION_CHECK_THROTTLE_MS = 30 * 1000;
+const CCB_EVICTION_IDLE_MS = 60 * 60 * 1000;
+const CCB_EVICTION_CHECK_THROTTLE_MS = 5 * 60 * 1000;
 const TOPIC_SUMMARY_CONCAT_MAX = 3;
 const TOPIC_SUMMARY_CLOUD_BATCH = 5;
 const IMPOSSIBLE_SIMILARITY_SCORE_THRESHOLD = 0.35;
@@ -99,6 +102,7 @@ export function createInMemoryContextStore(
   const archiverService = createArchiverService({ cloudModel });
   const contextSearcher = options.contextSearcher ?? createContextSearcher();
   const recallDebugEnabled = parseBooleanEnv(process.env.STATE_DAEMON_RECALL_DEBUG);
+  let lastCcbEvictionTime = 0;
 
   return {
     ingestMessage: async ({ message }) => {
@@ -106,12 +110,20 @@ export function createInMemoryContextStore(
       const chatId = message.chatId;
       const messageId = message.messageId;
       const ccb = getOrCreateChatControlBlock(chatControlBlocks, chatId);
+      ccb.lastActivityTime = now;
+      if (now - lastCcbEvictionTime >= CCB_EVICTION_CHECK_THROTTLE_MS) {
+        lastCcbEvictionTime = now;
+        evictIdleChatControlBlocks(chatControlBlocks, now);
+      }
       const materializedMessage = materializeMessageActors(ccb, message, now);
       const isShortMessage = materializedMessage.context.length <= SHORT_MESSAGE_LENGTH;
       refreshUsernameAlias(ccb, materializedMessage, now);
-      await serializePerChat(chatLocks, chatId, () =>
-        downgradeExpiredSessions(ccb, now, SESSION_LRU_EXPIRE_MS, archiverService)
-      );
+      if (now - ccb.lastExpirationCheckTime >= EXPIRATION_CHECK_THROTTLE_MS) {
+        ccb.lastExpirationCheckTime = now;
+        await serializePerChat(chatLocks, chatId, () =>
+          downgradeExpiredSessions(ccb, now, SESSION_LRU_EXPIRE_MS, archiverService)
+        );
+      }
       const existing = ccb.messageNodes.get(messageId);
       if (existing) {
         existing.message = materializedMessage;
@@ -462,6 +474,8 @@ function getOrCreateChatControlBlock(
     identityEvents: [],
     lastMessageNodeId: null,
     nextSessionSeq: 1,
+    lastExpirationCheckTime: 0,
+    lastActivityTime: Date.now(),
   };
   chatControlBlocks.set(chatId, next);
   return next;
@@ -1288,10 +1302,10 @@ function buildEmbeddingTextWithGhostContext(
     return currentText;
   }
 
-  // const delta = message.timestamp - lastNode.timestamp;
-  // if (delta < 0 || delta >= GHOST_CONTEXT_WINDOW_MS) {
-  //   return currentText;
-  // }
+  const delta = message.timestamp - lastNode.timestamp;
+  if (delta < 0 || delta >= GHOST_CONTEXT_WINDOW_MS) {
+    return currentText;
+  }
   if (lastNode.message.context.length >= MEDIUM_MESSAGE_LENGTH && currentText.length >= MEDIUM_MESSAGE_LENGTH) {
     return currentText;
   }
@@ -1425,6 +1439,8 @@ function pickBestSession(
   shortMessageThreshold: number
 ): { session: SessionControlBlock | null; score: number } {
   let winner: { session: SessionControlBlock; score: number } | null = null;
+  const recentTop: Array<{ session: SessionControlBlock; score: number }> = [];
+
   for (const session of ccb.sessionControlBlocks.values()) {
     if (session.status === "L3_ARCHIVED") {
       continue;
@@ -1433,39 +1449,48 @@ function pickBestSession(
     if (!winner || score > winner.score) {
       winner = { session, score };
     }
+    if (isMediumMessage || isShortMessage) {
+      insertIntoRecentTop(recentTop, { session, score }, RECENT_SESSIONS_COUNT);
+    }
   }
   if (winner && winner.score >= similarityThreshold) {
     return winner;
   }
-  
-  if(isMediumMessage) {
-    const recentSessions = Array.from(ccb.sessionControlBlocks.values())
-      .sort((a, b) => b.lastActiveTime - a.lastActiveTime)
-      .slice(0, RECENT_SESSIONS_COUNT);
 
+  if (isMediumMessage && recentTop.length > 0) {
     let shortWinner: { session: SessionControlBlock; score: number } | null = null;
-    for (const session of recentSessions) {
-      if (session.status === "L3_ARCHIVED") {
-        continue;
-      }
-      const score = scoreMessageToSession(vector, session, now, alphaTime, lambda);
-      // console.log("short", session.sessionId, score);
-      if (!shortWinner || score > shortWinner.score) {
-        shortWinner = { session, score };
+    for (const entry of recentTop) {
+      if (!shortWinner || entry.score > shortWinner.score) {
+        shortWinner = entry;
       }
     }
-
     if (shortWinner && shortWinner.score > shortMessageThreshold) {
       return shortWinner;
     }
   }
 
-  if(isShortMessage) {
-    const recentSessions = Array.from(ccb.sessionControlBlocks.values())
-      .sort((a, b) => b.lastActiveTime - a.lastActiveTime);
-    return { session: recentSessions[0], score: 0 };
+  if (isShortMessage && recentTop.length > 0) {
+    return { session: recentTop[0].session, score: 0 };
   }
-  return {session: null, score: winner?.score ?? 0};
+  return { session: null, score: winner?.score ?? 0 };
+}
+
+function insertIntoRecentTop(
+  top: Array<{ session: SessionControlBlock; score: number }>,
+  entry: { session: SessionControlBlock; score: number },
+  maxSize: number,
+): void {
+  let insertIdx = top.length;
+  for (let i = 0; i < top.length; i++) {
+    if (entry.session.lastActiveTime > top[i].session.lastActiveTime) {
+      insertIdx = i;
+      break;
+    }
+  }
+  top.splice(insertIdx, 0, entry);
+  if (top.length > maxSize) {
+    top.length = maxSize;
+  }
 }
 
 async function tryAssignSessionByDecider(input: {
@@ -1534,11 +1559,9 @@ function scoreMessageToSession(
 }
 
 function cosine(vecA: number[], vecB: number[]): number {
-  const dot = vecA.reduce((sum, a, i) => sum + a * vecB[i], 0);
-  const normA = Math.sqrt(vecA.reduce((sum, a) => sum + a * a, 0));
-  const normB = Math.sqrt(vecB.reduce((sum, b) => sum + b * b, 0));
-  if (normA * normB === 0) return 0;
-  return dot / (normA * normB);
+  let dot = 0;
+  for (let i = 0; i < vecA.length; i++) dot += vecA[i] * vecB[i];
+  return dot;
 }
 
 function createSession(
@@ -1740,11 +1763,22 @@ function setSessionActive(ccb: ChatControlBlock, activeSessionId: string): void 
   }
 }
 
+function normalizeVector(vec: number[]): number[] {
+  let norm = 0;
+  for (let i = 0; i < vec.length; i++) norm += vec[i] * vec[i];
+  norm = Math.sqrt(norm);
+  if (norm === 0) return vec;
+  const result = new Array<number>(vec.length);
+  for (let i = 0; i < vec.length; i++) result[i] = vec[i] / norm;
+  return result;
+}
+
 function updateCenterVector(previous: number[], current: number[], alphaCenter: number): number[] {
     if (previous.length === 0 || previous.length !== current.length) {
       return current.slice();
     }
-    return previous.map((p, i) => alphaCenter * current[i] + (1 - alphaCenter) * p);
+    const result = previous.map((p, i) => alphaCenter * current[i] + (1 - alphaCenter) * p);
+    return normalizeVector(result);
 }
 
 function buildTopicSummary(text: string): string {
@@ -1821,5 +1855,23 @@ async function serializePerChat(
   const next = prev.then(fn, fn);
   locks.set(chatId, next);
   await next;
+  if (locks.get(chatId) === next) {
+    locks.delete(chatId);
+  }
+}
+
+function evictIdleChatControlBlocks(
+  chatControlBlocks: Map<number, ChatControlBlock>,
+  now: number,
+): void {
+  for (const [chatId, ccb] of chatControlBlocks) {
+    if (now - ccb.lastActivityTime < CCB_EVICTION_IDLE_MS) {
+      continue;
+    }
+    if (ccb.sessionControlBlocks.size > 0 || ccb.messageNodes.size > 0) {
+      continue;
+    }
+    chatControlBlocks.delete(chatId);
+  }
 }
 

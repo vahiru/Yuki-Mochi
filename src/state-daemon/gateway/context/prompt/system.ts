@@ -8,8 +8,27 @@ const SHARED_MEMORY_DIR = resolve(CURRENT_DIR, "../../../../../.runtime/memory_f
 const DEFAULT_SEND_MESSAGE_MODE: SendMessageMode = "strict";
 export const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 const GROUP_PROMPT_STORE_FILE = "group-prompts.json";
+const FILE_CACHE_TTL_MS = 30_000;
 
 const DEFAULT_SYSTEM_FILE_NAMES = ["Soul.md", "Identity.md", "Tools.md"] as const;
+
+const fileCache = new Map<string, { content: string; expiresAt: number }>();
+
+function readCachedFile(filePath: string): string {
+  const now = Date.now();
+  const cached = fileCache.get(filePath);
+  if (cached && now < cached.expiresAt) {
+    return cached.content;
+  }
+  try {
+    const content = readFileSync(filePath, "utf8");
+    fileCache.set(filePath, { content, expiresAt: now + FILE_CACHE_TTL_MS });
+    return content;
+  } catch {
+    fileCache.delete(filePath);
+    return "";
+  }
+}
 
 export function resolveSendMessageMode(): SendMessageMode {
   const raw = process.env.ENCLAVE_SEND_MESSAGE_MODE?.trim().toLowerCase();
@@ -25,12 +44,11 @@ export function resolveMemoryDir(): string {
 
 function readMemoryFile(fileName: string): string {
   const filePath = resolve(resolveMemoryDir(), fileName);
-  try {
-    return readFileSync(filePath, "utf8");
-  } catch {
+  const content = readCachedFile(filePath);
+  if (!content) {
     console.warn(`[system] memory file not found, skipping: ${filePath}`);
-    return "";
   }
+  return content;
 }
 
 export function loadSystemFilesFromMemory(
@@ -54,10 +72,8 @@ export function loadGroupPromptByChatId(chatId: string | number): string | undef
   }
 
   const filePath = resolve(resolveMemoryDir(), GROUP_PROMPT_STORE_FILE);
-  let raw: string;
-  try {
-    raw = readFileSync(filePath, "utf8");
-  } catch {
+  const raw = readCachedFile(filePath);
+  if (!raw) {
     return undefined;
   }
 

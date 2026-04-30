@@ -1,6 +1,6 @@
 import type { CloudModel } from "../../../model/llm";
 import type { TelegramMessage } from "../../../types/message";
-import { createMemoryVfsClient, type ChatMessage, type MessageMetadata } from "../../../storage/vfs";
+import { getSharedMemoryVfsClient, type ChatMessage, type MessageMetadata } from "../../../storage/vfs";
 import { buildMentionActorRefs, buildReplyActorRef, buildSenderActorRef } from "../../../utils/actor";
 import { createArchiveAssembler } from "./assembler";
 import { ARCHIVER_SYSTEM_PROMPT } from "./prompt";
@@ -49,11 +49,12 @@ export interface ArchiverService {
 
 export interface CreateArchiverServiceOptions {
   cloudModel?: CloudModel;
+  vfsClient?: InstanceType<typeof import("../../../storage/vfs").MemoryVfsClient>;
 }
 
 export function createArchiverService(options: CreateArchiverServiceOptions = {}): ArchiverService {
   const cloudModel = options.cloudModel;
-  const vfsClient = createMemoryVfsClient();
+  const vfsClient = options.vfsClient ?? getSharedMemoryVfsClient();
   const assembler = createArchiveAssembler();
 
   return {
