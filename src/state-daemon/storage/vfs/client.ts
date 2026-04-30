@@ -432,11 +432,10 @@ export class MemoryVfsClient {
   }
 
   async archive(request: ArchiveRequest): Promise<ArchiveResponse> {
-    // --- [PRESERVED] Old direct RPC ---
-    // return this.grpcClient.archive(request, this.buildOptions());
+    const options = await this.buildOptions();
+    const BATCH_SIZE = 5;
 
-    // Logos: archive = write each message to memory, then write summary
-    // Messages are stored individually via logos://memory/groups/{chat_id}/messages
+    const writePayloads: Array<{ uri: string; content: string }> = [];
     for (const msg of request.messages) {
       const normalizedTsMs = normalizeTimestamp(msg.timestamp);
       const metadata = msg.metadata as (MessageMetadata & StoredMessageMeta) | undefined;
@@ -480,16 +479,19 @@ export class MemoryVfsClient {
             }
           : undefined,
       });
-      await this.logosClient.write(
-        {
-          uri: `logos://memory/groups/${request.chatId}/messages`,
-          content: msgJson,
-        },
-        await this.buildOptions(),
+      writePayloads.push({
+        uri: `logos://memory/groups/${request.chatId}/messages`,
+        content: msgJson,
+      });
+    }
+
+    for (let i = 0; i < writePayloads.length; i += BATCH_SIZE) {
+      const batch = writePayloads.slice(i, i + BATCH_SIZE);
+      await Promise.all(
+        batch.map((payload) => this.logosClient.write(payload, options))
       );
     }
 
-    // Write summary as a short summary if provided
     if (request.abstractSummary) {
       const now = new Date();
       const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}T${String(now.getHours()).padStart(2, "0")}`;
@@ -505,7 +507,7 @@ export class MemoryVfsClient {
           uri: `logos://memory/groups/${request.chatId}/summary/short/${period}`,
           content: summaryJson,
         },
-        await this.buildOptions(),
+        options,
       );
     }
 
@@ -524,6 +526,15 @@ export class MemoryVfsClient {
 
 export function createMemoryVfsClient(options?: CreateMemoryVfsClientOptions): MemoryVfsClient {
   return new MemoryVfsClient(options);
+}
+
+let sharedClient: MemoryVfsClient | null = null;
+
+export function getSharedMemoryVfsClient(options?: CreateMemoryVfsClientOptions): MemoryVfsClient {
+  if (!sharedClient) {
+    sharedClient = new MemoryVfsClient(options);
+  }
+  return sharedClient;
 }
 
 /** Translate old mem:// paths to logos:// URIs. */

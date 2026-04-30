@@ -170,6 +170,7 @@ export function createGroupPromptMemoryStore(memoryFilesRoot = resolveMemoryFile
   const root = resolve(memoryFilesRoot);
   const storePath = resolve(root, GROUP_PROMPT_STORE_FILE);
   const locks = new Map<string, Promise<void>>();
+  let cachedStore: GroupPromptStoreData | null = null;
 
   const withLock = async <T>(chatId: string, fn: () => Promise<T>): Promise<T> => {
     const prev = locks.get(chatId) ?? Promise.resolve();
@@ -177,14 +178,23 @@ export function createGroupPromptMemoryStore(memoryFilesRoot = resolveMemoryFile
     const next = prev.then(async () => { result = await fn(); }, async () => { result = await fn(); });
     locks.set(chatId, next);
     await next;
+    if (locks.get(chatId) === next) {
+      locks.delete(chatId);
+    }
     return result!;
   };
 
-  const read = async () => readStore(storePath);
+  const read = async (): Promise<GroupPromptStoreData> => {
+    if (cachedStore) return cachedStore;
+    const data = await readStore(storePath);
+    cachedStore = data;
+    return data;
+  };
 
   const write = async (next: GroupPromptStoreData) => {
     await mkdir(root, { recursive: true });
     await writeStoreAtomic(storePath, next);
+    cachedStore = next;
   };
 
   return {

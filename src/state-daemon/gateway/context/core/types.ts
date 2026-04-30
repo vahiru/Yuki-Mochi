@@ -76,6 +76,8 @@ export interface ChatControlBlock {
   identityEvents: ContextIdentityEvent[];
   lastMessageNodeId: number | null;
   nextSessionSeq: number;
+  lastExpirationCheckTime: number;
+  lastActivityTime: number;
 }
 
 export interface ContextAnchorSnapshot {

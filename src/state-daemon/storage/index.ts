@@ -3,6 +3,7 @@ export type { UserRole, UserRoleEntry, UserRolesStore } from "./userRoles";
 export {
   MemoryVfsClient,
   createMemoryVfsClient,
+  getSharedMemoryVfsClient,
   type CreateMemoryVfsClientOptions,
 } from "./vfs";
 export type {
