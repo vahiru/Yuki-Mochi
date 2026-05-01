@@ -85,3 +85,8 @@ bun.lock
 AGENTS.md
 CLAUDE.md
 scripts/build-vfs-native.sh
+
+# local assistant scratch/workspace files
+.claude/
+.tmp/
+prompts/
