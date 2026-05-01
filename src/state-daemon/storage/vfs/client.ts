@@ -589,13 +589,22 @@ export class MemoryVfsClient {
         messageCount: request.messages.length,
         archivedAt: new Date().toISOString(),
       });
-      await this.logosClient.write(
-        {
-          uri: `logos://memory/groups/${request.chatId}/sessions/${request.sessionId}`,
-          content: sessionMetaJson,
-        },
-        options,
-      );
+      try {
+        await this.logosClient.write(
+          {
+            uri: `logos://memory/groups/${request.chatId}/sessions/${request.sessionId}`,
+            content: sessionMetaJson,
+          },
+          options,
+        );
+      } catch (error) {
+        if (!isUnsupportedSessionMetadataWrite(error)) {
+          throw error;
+        }
+        console.warn(
+          "memory vfs skipped session metadata write: sessions resource is not writable"
+        );
+      }
     }
 
     return { success: true, errorMsg: "" };
@@ -634,6 +643,16 @@ function translatePath(path: string): string {
   }
   // Bare path -> assume users namespace
   return `logos://users/${path}`;
+}
+
+function isUnsupportedSessionMetadataWrite(error: unknown): boolean {
+  const details =
+    typeof error === "object" && error !== null && "details" in error
+      ? String((error as { details?: unknown }).details)
+      : error instanceof Error
+        ? error.message
+        : String(error);
+  return details.includes("unknown memory resource for write: sessions");
 }
 
 function parseExactSearchTarget(request: SearchRequest): ExactSearchTarget | null {
