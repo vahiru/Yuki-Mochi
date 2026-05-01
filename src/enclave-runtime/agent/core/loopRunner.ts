@@ -43,6 +43,7 @@ export type AgentLoopStreamEvent =
       type: "send_message";
       delta: string;
       toolCallId?: string;
+      parseMode?: "markdown" | "html" | "plain";
       awaitResponse?: boolean;
       replyTo?: string;
     }
@@ -173,6 +174,7 @@ interface ApoptosisToolResult {
 interface SendMessageToolResult {
   details?: {
     text?: string;
+    parseMode?: string;
     awaitResponse?: boolean;
     replyTo?: string;
   };
@@ -229,6 +231,7 @@ function resolveStrictTextFallbackEnabled(): boolean {
 
 function extractSendMessagePayload(result: unknown): {
   text: string;
+  parseMode?: "markdown" | "html" | "plain";
   awaitResponse: boolean;
   replyTo?: string;
 } | null {
@@ -240,8 +243,15 @@ function extractSendMessagePayload(result: unknown): {
   const replyTo = typeof details?.replyTo === "string" && details.replyTo.trim()
     ? details.replyTo.trim()
     : undefined;
+  const parseMode =
+    details?.parseMode === "markdown" ||
+    details?.parseMode === "html" ||
+    details?.parseMode === "plain"
+      ? details.parseMode
+      : undefined;
   return {
     text,
+    parseMode,
     awaitResponse: details?.awaitResponse === true,
     replyTo,
   };
@@ -824,6 +834,7 @@ export function createAgentLoopRunner(options: CreateAgentLoopRunnerOptions): Ag
                 type: "send_message",
                 delta: payload.text,
                 toolCallId: event.toolCallId,
+                parseMode: payload.parseMode,
                 awaitResponse: payload.awaitResponse,
                 replyTo: payload.replyTo,
               };

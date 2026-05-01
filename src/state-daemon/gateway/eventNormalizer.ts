@@ -265,11 +265,16 @@ function buildMergedMessage(messages: TelegramMessage[]): TelegramMessage {
   let usernameHandle: string | null = null;
   let senderEntityType = last.metadata.senderEntityType;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (!usernameHandle && messages[i].metadata.usernameHandle) {
-      usernameHandle = messages[i].metadata.usernameHandle;
+    const message = messages[i];
+    if (!message) {
+      continue;
     }
-    if (senderEntityType === last.metadata.senderEntityType && messages[i].metadata.senderEntityType) {
-      senderEntityType = messages[i].metadata.senderEntityType;
+    const candidateUsernameHandle = message.metadata.usernameHandle ?? null;
+    if (!usernameHandle && candidateUsernameHandle) {
+      usernameHandle = candidateUsernameHandle;
+    }
+    if (senderEntityType === last.metadata.senderEntityType && message.metadata.senderEntityType) {
+      senderEntityType = message.metadata.senderEntityType;
     }
     if (usernameHandle) break;
   }

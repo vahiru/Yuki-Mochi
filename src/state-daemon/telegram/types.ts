@@ -5,6 +5,11 @@ import type {
 export type { TelegramConversationType, TelegramMessage };
 
 export type TelegramOutgoingMediaType = "image" | "audio" | "file";
+export type TelegramParseMode = "markdown" | "html" | "plain";
+
+export interface TelegramTextOptions {
+  parseMode?: TelegramParseMode;
+}
 
 export interface TelegramOutgoingMediaItem {
   source: string;
@@ -30,6 +35,7 @@ export interface StreamState {
   replyToMessageId: number | null;
   replyToUserId: string | null;
   statusText: string | null;
+  parseMode: TelegramParseMode | null;
   lastRenderedText: string;
   lastFlushAtMs: number;
   buffer: string;
@@ -46,12 +52,18 @@ export interface TelegramAdapter {
   onEditedMessage: (
     handler: (message: TelegramMessage) => void | Promise<void>
   ) => () => void;
-  reply: (chatId: number, text: string, messageId?: number) => Promise<void>;
+  reply: (
+    chatId: number,
+    text: string,
+    messageId?: number,
+    options?: TelegramTextOptions
+  ) => Promise<void>;
   sendMediaBatch: (
     chatId: number,
     items: TelegramOutgoingMediaItem[],
     options?: {
       caption?: string;
+      parseMode?: TelegramParseMode;
       replyToMessageId?: number;
     }
   ) => Promise<TelegramSendMediaBatchResult>;
@@ -62,6 +74,10 @@ export interface TelegramAdapter {
     placeholder?: string
   ) => Promise<number>;
   setStreamStatus: (streamMessageId: number, status: string) => Promise<void>;
-  appendStream: (streamMessageId: number, chunk: string) => void;
+  appendStream: (
+    streamMessageId: number,
+    chunk: string,
+    options?: TelegramTextOptions
+  ) => void;
   endStream: (streamMessageId: number) => Promise<string>;
 }

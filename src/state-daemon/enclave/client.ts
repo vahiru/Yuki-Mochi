@@ -42,6 +42,7 @@ interface GrpcStreamReplyEvent {
   result_json?: string;
   await_response?: boolean;
   reply_to?: string;
+  parse_mode?: string;
   error?: string;
 }
 
@@ -167,6 +168,17 @@ function parseSendFilePayload(raw: string | undefined): {
   return { items, caption };
 }
 
+function normalizeParseMode(input: unknown): "markdown" | "html" | "plain" | undefined {
+  if (typeof input !== "string") {
+    return undefined;
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized === "markdown" || normalized === "html" || normalized === "plain") {
+    return normalized;
+  }
+  return undefined;
+}
+
 function mapGrpcEvent(event: GrpcStreamReplyEvent): EnclaveStreamEvent {
   const type = event.type ?? "";
   if (type === "message_update") {
@@ -177,10 +189,12 @@ function mapGrpcEvent(event: GrpcStreamReplyEvent): EnclaveStreamEvent {
     };
   }
   if (type === "send_message") {
+    const parseMode = normalizeParseMode(event.parse_mode);
     return {
       type: "send_message",
       delta: event.delta ?? "",
       toolCallId: event.tool_call_id,
+      parseMode,
       awaitResponse: event.await_response ?? false,
       replyTo: event.reply_to,
     };

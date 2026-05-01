@@ -5,6 +5,7 @@ import { CustomFile } from "telegram/client/uploads";
 import type {
   TelegramAdapter,
   TelegramMessage,
+  TelegramParseMode,
   StreamState,
   TelegramOutgoingMediaItem,
   TelegramSendMediaBatchResult,
@@ -16,6 +17,7 @@ import { createCustomEmojiToTextResolver } from "./custom-emoji-to-text";
 import { createImageAltTextStore } from "./image-to-text-store";
 import type { CustomEmojiToTextConfig } from "./index";
 import { hydrateMessageActors } from "../utils/actor";
+import { formatTelegramText, withTelegramFormattingFallback } from "./formatting";
 
 const DEFAULT_FINAL_TEXT = "(empty)";
 const DEFAULT_STREAM_PLACEHOLDER = "Working on it... estimated 30-90 seconds.";
@@ -712,10 +714,7 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
       return;
     }
     const target = await getSafeEntity(state.chatId);
-    await (client as any).editMessage(target, {
-      message: state.placeholderMessageId,
-      text,
-    });
+    await editFormattedMessage(target, state.placeholderMessageId, text, state.parseMode ?? undefined);
     state.lastRenderedText = text;
     state.lastFlushAtMs = Date.now();
   };
@@ -753,6 +752,56 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
     }
   };
 
+  const sendFormattedMessage = async (
+    target: any,
+    text: string,
+    options?: { replyTo?: number; parseMode?: TelegramParseMode }
+  ): Promise<Api.Message> => {
+    return withTelegramFormattingFallback({
+      text,
+      parseMode: options?.parseMode,
+      fallbackLogPrefix: "[userbot] formatted message send failed",
+      sendFormatted: (payload) => {
+        const params: Record<string, unknown> = {
+          message: payload.text,
+          replyTo: options?.replyTo,
+        };
+        params.parseMode = payload.kind === "html" ? "html" : false;
+        return client.sendMessage(target, params as any);
+      },
+      sendPlain: () => client.sendMessage(target, {
+        message: text,
+        replyTo: options?.replyTo,
+        parseMode: false,
+      } as any),
+    });
+  };
+
+  const editFormattedMessage = async (
+    target: any,
+    messageId: number,
+    text: string,
+    parseMode?: TelegramParseMode
+  ): Promise<void> => {
+    await withTelegramFormattingFallback({
+      text,
+      parseMode,
+      fallbackLogPrefix: "[userbot] formatted message edit failed",
+      sendFormatted: (payload) => {
+        const params: Record<string, unknown> = {
+          message: messageId,
+          text: payload.text,
+        };
+        params.parseMode = payload.kind === "html" ? "html" : false;
+        return (client as any).editMessage(target, params);
+      },
+      sendPlain: () => (client as any).editMessage(target, {
+        message: messageId,
+        text,
+        parseMode: false,
+      }),
+    });
+  };
 
   return {
     start: async () => {
@@ -813,9 +862,12 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
     getMessages: () => [],
     onMessage: (h) => { messageHandlers.add(h); return () => messageHandlers.delete(h); },
     onEditedMessage: () => () => {},
-    reply: async (chatId, text, messageId) => {
+    reply: async (chatId, text, messageId, options) => {
       const target = await getSafeEntity(chatId);
-      const sent = await client.sendMessage(target, { message: text, replyTo: messageId });
+      const sent = await sendFormattedMessage(target, text, {
+        replyTo: messageId,
+        parseMode: options?.parseMode,
+      });
       if (sent instanceof Api.Message) {
         rememberOutgoingMessage(chatId, sent);
       }
@@ -842,18 +894,36 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
           const effectiveCaption = caption && index === 0 ? caption : undefined;
           try {
             const fileInput = await resolveUserbotMediaInput(item, uploadSequence);
+            const captionPayload = effectiveCaption
+              ? formatTelegramText(effectiveCaption, options?.parseMode)
+              : null;
             const sendOptions: Record<string, unknown> = {
               file: fileInput,
-              caption: effectiveCaption,
+              caption: captionPayload?.text,
               replyTo,
             };
+            if (captionPayload) {
+              sendOptions.parseMode = captionPayload.kind === "html" ? "html" : false;
+            }
             if (item.type === "file") {
               sendOptions.forceDocument = true;
             }
             if (item.type === "audio") {
               sendOptions.voiceNote = false;
             }
-            const sent = await (client as any).sendFile(target, sendOptions);
+            const sent = effectiveCaption
+              ? await withTelegramFormattingFallback({
+                text: effectiveCaption,
+                parseMode: options?.parseMode,
+                fallbackLogPrefix: "[userbot] formatted caption send failed",
+                sendFormatted: () => (client as any).sendFile(target, sendOptions),
+                sendPlain: () => (client as any).sendFile(target, {
+                  ...sendOptions,
+                  caption: effectiveCaption,
+                  parseMode: false,
+                }),
+              })
+              : await (client as any).sendFile(target, sendOptions);
             if (sent instanceof Api.Message) {
               rememberOutgoingMessage(chatId, sent);
             }
@@ -883,8 +953,7 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
       let placeholderMessageId: number | null = null;
       try {
         const target = await getSafeEntity(chatId);
-        const sent = await client.sendMessage(target, {
-          message: initialStatus,
+        const sent = await sendFormattedMessage(target, initialStatus, {
           replyTo: messageId || undefined,
         });
         if (sent instanceof Api.Message) {
@@ -903,6 +972,7 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
         replyToMessageId: messageId || null,
         replyToUserId: null,
         statusText: initialStatus,
+        parseMode: null,
         lastRenderedText: placeholderMessageId ? initialStatus : "",
         lastFlushAtMs: Date.now(),
         buffer: "",
@@ -920,9 +990,12 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
       s.statusText = normalized;
       await flushStreamPreview(s, true);
     },
-    appendStream: (id, c) => {
+    appendStream: (id, c, options) => {
       const s = streams.get(id);
       if (s) {
+        if (options?.parseMode && !s.parseMode) {
+          s.parseMode = options.parseMode;
+        }
         s.buffer += c;
         s.chunkCount += 1;
         if (s.chunkCount % 5 === 0) void setTyping(s.chatId);
@@ -938,9 +1011,9 @@ export function createUserBotAdapter(options: UserBotAdapterOptions): TelegramAd
       }
 
       const target = await getSafeEntity(s.chatId);
-      const sent = await client.sendMessage(target, {
-        message: text,
+      const sent = await sendFormattedMessage(target, text, {
         replyTo: s.replyToMessageId || undefined,
+        parseMode: s.parseMode ?? undefined,
       });
       if (sent instanceof Api.Message) {
         rememberOutgoingMessage(s.chatId, sent);

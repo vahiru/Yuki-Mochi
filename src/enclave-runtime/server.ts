@@ -111,6 +111,7 @@ interface GrpcStreamReplyEvent {
   result_json?: string;
   await_response?: boolean;
   reply_to?: string;
+  parse_mode?: string;
   error?: string;
 }
 
@@ -230,6 +231,7 @@ function toGrpcEvent(event: AgentLoopStreamEvent): GrpcStreamReplyEvent {
       type: "send_message",
       delta: event.delta,
       tool_call_id: event.toolCallId,
+      parse_mode: event.parseMode,
       await_response: event.awaitResponse ?? false,
       reply_to: event.replyTo,
     };

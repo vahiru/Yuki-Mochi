@@ -25,6 +25,7 @@ export type EnclaveStreamEvent =
       type: "send_message";
       delta: string;
       toolCallId?: string;
+      parseMode?: "markdown" | "html" | "plain";
       awaitResponse?: boolean;
       replyTo?: string;
     }

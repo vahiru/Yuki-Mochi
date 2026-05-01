@@ -5,9 +5,12 @@ const MAX_TEXT_CHARS = 4000;
 
 interface SendMessageDetails {
   text: string;
+  parseMode?: "markdown" | "html" | "plain";
   replyTo?: string;
   awaitResponse: boolean;
 }
+
+type SendMessageParseMode = "markdown" | "html" | "plain";
 
 function normalizeReplyTo(input: unknown): string | undefined {
   if (typeof input === "number" && Number.isFinite(input)) {
@@ -20,6 +23,17 @@ function normalizeReplyTo(input: unknown): string | undefined {
   return undefined;
 }
 
+function normalizeParseMode(input: unknown): SendMessageParseMode | undefined {
+  if (typeof input !== "string") {
+    return undefined;
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized === "markdown" || normalized === "html" || normalized === "plain") {
+    return normalized;
+  }
+  throw new Error("send_message.parse_mode must be one of: markdown, html, plain.");
+}
+
 export function createSendMessageTool(): AgentTool<any, SendMessageDetails> {
   return {
     name: "send_message",
@@ -30,6 +44,15 @@ export function createSendMessageTool(): AgentTool<any, SendMessageDetails> {
       text: Type.String({
         description: "Message text to send to the user.",
       }),
+      parse_mode: Type.Optional(
+        Type.Union(
+          [Type.Literal("markdown"), Type.Literal("html"), Type.Literal("plain")],
+          {
+            description:
+              "Optional Telegram formatting mode. Defaults to markdown. Use html only for Telegram-supported HTML.",
+          }
+        )
+      ),
       reply_to: Type.Optional(
         Type.Union(
           [Type.String(), Type.Number()],
@@ -52,12 +75,14 @@ export function createSendMessageTool(): AgentTool<any, SendMessageDetails> {
         throw new Error(`send_message.text too long. Max ${MAX_TEXT_CHARS} chars.`);
       }
       const replyTo = normalizeReplyTo(params.reply_to);
+      const parseMode = normalizeParseMode(params.parse_mode);
       const awaitResponse = params.await_response === true;
 
       return {
         content: [{ type: "text", text: `Queued message (${text.length} chars).` }],
         details: {
           text,
+          parseMode,
           replyTo,
           awaitResponse,
         },

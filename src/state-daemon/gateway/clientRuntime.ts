@@ -2,6 +2,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import type { LLMMessage, TelegramMessage } from "../types/message";
+import type { TelegramParseMode } from "../telegram/types";
 import { RemoteAsyncIterable } from "../types/remoteAsyncIterable";
 import type { AgentEnclaveClient, EnclaveOutgoingMediaItem } from "../enclave/protocol";
 import {
@@ -36,6 +37,7 @@ export type RuntimeReplyStreamEvent =
   | {
       type: "send_message";
       text: string;
+      parseMode?: TelegramParseMode;
       replyToMessageId?: number;
       awaitResponse?: boolean;
     }
@@ -506,6 +508,7 @@ export function createClientRuntime(options: CreateClientRuntimeOptions): Client
             stream.push({
               type: "send_message",
               text: event.delta,
+              parseMode: event.parseMode,
               replyToMessageId: parseReplyToMessageId(event.replyTo),
               awaitResponse: event.awaitResponse,
             });

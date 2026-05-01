@@ -534,7 +534,8 @@ export function createMessageGateway(
               const needsSpacer = hasTextOutput;
               options.telegram.appendStream(
                 streamMessageId,
-                needsSpacer ? `\n\n${chunk}` : chunk
+                needsSpacer ? `\n\n${chunk}` : chunk,
+                { parseMode: event.parseMode }
               );
               hasOutput = true;
               hasTextOutput = true;
@@ -639,14 +640,15 @@ export function createMessageGateway(
         }
         if (event.type === "send_message") {
           const replyToMessageId = event.replyToMessageId ?? message.messageId;
-          const replyChunks = isGroupConversationType(message.conversationType)
+          const replyChunks = isGroupConversationType(message.conversationType) && event.parseMode !== "html"
             ? splitGroupReplyText(event.text, groupReplySoftLimit)
             : [event.text.trim()].filter(Boolean);
           for (const replyChunk of replyChunks) {
             await options.telegram.reply(
               message.chatId,
               replyChunk,
-              replyToMessageId
+              replyToMessageId,
+              { parseMode: event.parseMode }
             );
             sentMessagesCount += 1;
           }

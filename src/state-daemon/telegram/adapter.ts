@@ -4,11 +4,12 @@ import type {
   TelegramAdapter,
   TelegramConversationType,
   TelegramMessage,
+  TelegramParseMode,
   TelegramOutgoingMediaItem,
   TelegramSendMediaBatchResult,
 } from "./types";
 import type { TelegramSenderEntityType } from "../types/message";
-import { markdownToTelegramHtml } from "./markdownToHtml";
+import { formatTelegramText, withTelegramFormattingFallback } from "./formatting";
 import { createCustomEmojiToTextResolver } from "./custom-emoji-to-text";
 import { createImageAltTextStore } from "./image-to-text-store";
 import type { CustomEmojiToTextConfig } from "./index";
@@ -312,55 +313,73 @@ export function createTelegramAdapter(
     }
   };
 
-  const toTelegramPayload = (text: string): { body: string; parseMode?: "HTML" } => {
-    let htmlText: string | null = null;
-    try {
-      htmlText = markdownToTelegramHtml(text);
-    } catch {
-      // fall through
-    }
-    if (htmlText) {
-      return { body: htmlText, parseMode: "HTML" };
-    }
-    return { body: text };
-  };
-
-  const sendMessage = (
+  const sendMessage = async (
     chatId: number,
     text: string,
-    messageId?: number
+    messageId?: number,
+    parseMode?: TelegramParseMode
   ) => {
-    const payload = toTelegramPayload(text);
-    const opts: Record<string, unknown> = {};
-    if (payload.parseMode) opts.parse_mode = payload.parseMode;
+    const baseOpts: Record<string, unknown> = {};
     const resolvedMessageId = toOptionalMessageId(messageId);
     if (resolvedMessageId !== undefined) {
-      opts.reply_to_message_id = resolvedMessageId;
+      baseOpts.reply_to_message_id = resolvedMessageId;
     }
-    return bot.api.sendMessage(chatId, payload.body, opts as any);
+    return withTelegramFormattingFallback({
+      text,
+      parseMode,
+      fallbackLogPrefix: "telegram formatted message send failed",
+      sendFormatted: (payload) => {
+        const opts = { ...baseOpts };
+        if (payload.kind === "html") opts.parse_mode = "HTML";
+        return bot.api.sendMessage(chatId, payload.text, opts as any);
+      },
+      sendPlain: () => bot.api.sendMessage(chatId, text, baseOpts as any),
+    });
   };
 
-  const editStreamMessageText = async (state: StreamState, text: string) => {
+  const editStreamMessageText = async (
+    state: StreamState,
+    text: string,
+    parseMode?: TelegramParseMode
+  ) => {
     const placeholderMessageId = state.placeholderMessageId;
     if (placeholderMessageId == null) {
       return null;
     }
-    const payload = toTelegramPayload(text);
-    const opts: Record<string, unknown> = {};
-    if (payload.parseMode) {
-      opts.parse_mode = payload.parseMode;
-    }
-    return retry(
-      () =>
-        bot.api.editMessageText(
-          state.chatId,
-          placeholderMessageId,
-          payload.body,
-          opts as any
+    return withTelegramFormattingFallback({
+      text,
+      parseMode,
+      fallbackLogPrefix: "telegram formatted stream edit failed",
+      sendFormatted: (payload) => {
+        const opts: Record<string, unknown> = {};
+        if (payload.kind === "html") {
+          opts.parse_mode = "HTML";
+        }
+        return retry(
+          () =>
+            bot.api.editMessageText(
+              state.chatId,
+              placeholderMessageId,
+              payload.text,
+              opts as any
+            ),
+          EDIT_RETRY_ATTEMPTS,
+          EDIT_RETRY_DELAY_MS
+        );
+      },
+      sendPlain: () =>
+        retry(
+          () =>
+            bot.api.editMessageText(
+              state.chatId,
+              placeholderMessageId,
+              text,
+              {} as any
+            ),
+          EDIT_RETRY_ATTEMPTS,
+          EDIT_RETRY_DELAY_MS
         ),
-      EDIT_RETRY_ATTEMPTS,
-      EDIT_RETRY_DELAY_MS
-    );
+    });
   };
 
   const deleteStreamMessage = async (state: StreamState): Promise<void> => {
@@ -400,7 +419,7 @@ export function createTelegramAdapter(
     }
     state.lastFlushAtMs = now;
     try {
-      await editStreamMessageText(state, previewText);
+      await editStreamMessageText(state, previewText, state.parseMode ?? undefined);
       state.lastRenderedText = previewText;
     } catch (error) {
       if (isTelegramMessageNotModifiedError(error)) {
@@ -435,8 +454,8 @@ export function createTelegramAdapter(
     }
   };
 
-  const reply: TelegramAdapter["reply"] = async (chatId, text, messageId) => {
-    const sent = await sendMessage(chatId, text, messageId);
+  const reply: TelegramAdapter["reply"] = async (chatId, text, messageId, options) => {
+    const sent = await sendMessage(chatId, text, messageId, options?.parseMode);
     const outgoing = toOutgoingTelegramMessage(sent, botUserId);
     if (outgoing) {
       dispatchMessage(outgoing);
@@ -446,29 +465,48 @@ export function createTelegramAdapter(
   const sendMediaItem = async (
     chatId: number,
     item: TelegramOutgoingMediaItem,
-    options?: { caption?: string; replyToMessageId?: number }
+    options?: { caption?: string; parseMode?: TelegramParseMode; replyToMessageId?: number }
   ) => {
     const mediaInput = toTelegramMediaInput(item.source, item.fileName);
-    const payload = options?.caption ? toTelegramPayload(options.caption) : null;
+    const payload = options?.caption
+      ? formatTelegramText(options.caption, options.parseMode)
+      : null;
     const mediaOptions: Record<string, unknown> = {};
-    if (payload?.body) {
-      mediaOptions.caption = payload.body;
+    if (payload?.text) {
+      mediaOptions.caption = payload.text;
     }
-    if (payload?.parseMode) {
-      mediaOptions.parse_mode = payload.parseMode;
+    if (payload?.kind === "html") {
+      mediaOptions.parse_mode = "HTML";
     }
     const resolvedReplyTo = toOptionalMessageId(options?.replyToMessageId);
     if (resolvedReplyTo !== undefined) {
       mediaOptions.reply_to_message_id = resolvedReplyTo;
     }
 
-    if (item.type === "image") {
-      return bot.api.sendPhoto(chatId, mediaInput as any, mediaOptions as any);
+    const sendWithOptions = async (sendOptions: Record<string, unknown>): Promise<unknown> => {
+      if (item.type === "image") {
+        return await bot.api.sendPhoto(chatId, mediaInput as any, sendOptions as any);
+      }
+      if (item.type === "audio") {
+        return await bot.api.sendAudio(chatId, mediaInput as any, sendOptions as any);
+      }
+      return await bot.api.sendDocument(chatId, mediaInput as any, sendOptions as any);
+    };
+
+    if (!options?.caption) {
+      return sendWithOptions(mediaOptions);
     }
-    if (item.type === "audio") {
-      return bot.api.sendAudio(chatId, mediaInput as any, mediaOptions as any);
-    }
-    return bot.api.sendDocument(chatId, mediaInput as any, mediaOptions as any);
+    return withTelegramFormattingFallback({
+      text: options.caption,
+      parseMode: options.parseMode,
+      fallbackLogPrefix: "telegram formatted caption send failed",
+      sendFormatted: () => sendWithOptions(mediaOptions),
+      sendPlain: () => {
+        const plainOptions: Record<string, unknown> = { ...mediaOptions, caption: options.caption };
+        delete plainOptions.parse_mode;
+        return sendWithOptions(plainOptions);
+      },
+    });
   };
 
   const sendMediaBatch: TelegramAdapter["sendMediaBatch"] = async (
@@ -496,6 +534,7 @@ export function createTelegramAdapter(
         try {
           const sent = await sendMediaItem(chatId, item, {
             caption: effectiveCaption,
+            parseMode: options?.parseMode,
             replyToMessageId,
           });
           const outgoing = toOutgoingTelegramMessage(sent as any, botUserId);
@@ -559,6 +598,7 @@ export function createTelegramAdapter(
       replyToMessageId: messageId ?? null,
       replyToUserId: null,
       statusText: initialStatus,
+      parseMode: null,
       lastRenderedText: placeholderMessageId ? initialStatus : "",
       lastFlushAtMs: Date.now(),
       buffer: "",
@@ -583,10 +623,13 @@ export function createTelegramAdapter(
     await flushStreamPreview(streamId, true);
   };
 
-  const appendStream: TelegramAdapter["appendStream"] = (streamId, chunk) => {
+  const appendStream: TelegramAdapter["appendStream"] = (streamId, chunk, options) => {
     const state = streams.get(streamId);
     if (!state) {
       throw new Error(`stream not started for streamId: ${streamId}`);
+    }
+    if (options?.parseMode && !state.parseMode) {
+      state.parseMode = options.parseMode;
     }
     state.buffer += chunk;
     state.chunkCount += 1;
@@ -618,7 +661,8 @@ export function createTelegramAdapter(
       const sent = await sendMessage(
         state.chatId,
         finalText,
-        state.replyToMessageId ?? undefined
+        state.replyToMessageId ?? undefined,
+        state.parseMode ?? undefined
       );
       const outgoing = toOutgoingTelegramMessage(sent, botUserId);
       if (outgoing) {

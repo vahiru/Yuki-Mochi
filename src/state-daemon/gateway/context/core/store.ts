@@ -233,7 +233,7 @@ export function createInMemoryContextStore(
             ccb,
             materializedMessage,
             now,
-            explicitTargetActorIds,
+            explicitTargets,
           );
           const targetScopedQuery = buildTargetScopedRecallQuery(
             ccb,
@@ -2030,4 +2030,3 @@ function collectCachedUserProfiles(
   }
   return profiles;
 }
-
