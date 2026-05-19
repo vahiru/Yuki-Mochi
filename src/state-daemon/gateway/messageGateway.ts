@@ -465,9 +465,56 @@ export function createMessageGateway(
     }
 
     const instruction = etiquetteManager.getInstruction(socialState);
+    let hasVisibleOutput = false;
+
+    const resolveVisibleOutputReplyTo = (explicitReplyTo?: number): number | undefined => {
+      const isFirstVisibleOutput = !hasVisibleOutput;
+      hasVisibleOutput = true;
+      if (explicitReplyTo !== undefined) {
+        return explicitReplyTo;
+      }
+      return isFirstVisibleOutput ? message.messageId : undefined;
+    };
 
     const deliverMediaBatch = async (event: Extract<RuntimeReplyStreamEvent, { type: "send_file" }>) => {
-      const replyToMessageId = event.replyToMessageId ?? message.messageId;
+      const replyToMessageId = resolveVisibleOutputReplyTo(event.replyToMessageId);
+      if (
+        event.replyToMessageId === undefined &&
+        replyToMessageId !== undefined &&
+        event.items.length > 1
+      ) {
+        const firstItem = event.items[0];
+        const remainingItems = event.items.slice(1);
+        if (!firstItem) {
+          return { sentCount: 0, failures: [] };
+        }
+        const firstResult = await options.telegram.sendMediaBatch(
+          message.chatId,
+          [firstItem],
+          {
+            caption: event.caption,
+            replyToMessageId,
+          }
+        );
+        const remainingResult = await options.telegram.sendMediaBatch(
+          message.chatId,
+          remainingItems,
+          {}
+        );
+        const result = {
+          sentCount: firstResult.sentCount + remainingResult.sentCount,
+          failures: [...firstResult.failures, ...remainingResult.failures],
+        };
+
+        if (result.failures.length > 0) {
+          console.warn(
+            `[message gateway] media send had failures chatId=${message.chatId} sent=${result.sentCount} failed=${result.failures.length}`
+          );
+        }
+
+        return result;
+      }
+
       const result = await options.telegram.sendMediaBatch(
         message.chatId,
         event.items,
@@ -488,6 +535,7 @@ export function createMessageGateway(
 
     if (sendMessageMode === "compat") {
       const eta = estimateReplyEtaSeconds(message);
+      hasVisibleOutput = true;
       const streamMessageId = await options.telegram.startStream(
         message.chatId,
         message.messageId,
@@ -587,10 +635,11 @@ export function createMessageGateway(
           await options.telegram.endStream(streamMessageId);
         } catch (endError) {
           console.error("message gateway endStream failed:", endError);
+          const replyToMessageId = resolveVisibleOutputReplyTo();
           await options.telegram.reply(
             message.chatId,
             "Generation failed, please retry in a moment.",
-            message.messageId
+            replyToMessageId
           );
         }
         console.error("message gateway stream failed:", error);
@@ -619,10 +668,11 @@ export function createMessageGateway(
             return;
           }
           longWaitHintSent = true;
+          const replyToMessageId = resolveVisibleOutputReplyTo();
           void options.telegram.reply(
             message.chatId,
             "Still working on it, I will send messages as they are ready.",
-            message.messageId
+            replyToMessageId
           ).catch((error) => {
             console.error("message gateway long-wait hint failed:", error);
           });
@@ -639,11 +689,11 @@ export function createMessageGateway(
           continue;
         }
         if (event.type === "send_message") {
-          const replyToMessageId = event.replyToMessageId ?? message.messageId;
           const replyChunks = isGroupConversationType(message.conversationType) && event.parseMode !== "html"
             ? splitGroupReplyText(event.text, groupReplySoftLimit)
             : [event.text.trim()].filter(Boolean);
           for (const replyChunk of replyChunks) {
+            const replyToMessageId = resolveVisibleOutputReplyTo(event.replyToMessageId);
             await options.telegram.reply(
               message.chatId,
               replyChunk,
@@ -655,15 +705,20 @@ export function createMessageGateway(
           continue;
         }
         if (event.type === "send_file") {
+          const hadVisibleOutputBeforeMedia = hasVisibleOutput;
           const mediaResult = await deliverMediaBatch(event);
           if (mediaResult.sentCount > 0) {
             sentMessagesCount += 1;
           }
           if (mediaResult.sentCount === 0 && mediaResult.failures.length > 0) {
+            if (!hadVisibleOutputBeforeMedia && event.replyToMessageId === undefined) {
+              hasVisibleOutput = false;
+            }
+            const replyToMessageId = resolveVisibleOutputReplyTo(event.replyToMessageId);
             await options.telegram.reply(
               message.chatId,
               "Failed to send media files, please retry.",
-              event.replyToMessageId ?? message.messageId
+              replyToMessageId
             );
             sentMessagesCount += 1;
           }
@@ -680,20 +735,22 @@ export function createMessageGateway(
             ? splitGroupReplyText(fallbackText, groupReplySoftLimit)
             : [fallbackText];
           for (const fallbackChunk of fallbackChunks) {
+            const replyToMessageId = resolveVisibleOutputReplyTo();
             await options.telegram.reply(
               message.chatId,
               fallbackChunk,
-              message.messageId
+              replyToMessageId
             );
             sentMessagesCount += 1;
           }
         }
       }
     } catch (error) {
+      const replyToMessageId = resolveVisibleOutputReplyTo();
       await options.telegram.reply(
         message.chatId,
         "Generation failed, please retry in a moment.",
-        message.messageId
+        replyToMessageId
       );
       console.error("message gateway stream failed:", error);
     } finally {
